@@ -35,7 +35,6 @@ jobs:
         unzip -q "ncnn-${NCNN_VERSION}-android-vulkan.zip"
         mv "ncnn-${NCNN_VERSION}-android-vulkan" ncnn-android-vulkan
         rm "ncnn-${NCNN_VERSION}-android-vulkan.zip"
-        ls -la ncnn-android-vulkan/
         ls -la ncnn-android-vulkan/arm64-v8a/lib/
 
     - name: Create local.properties
@@ -43,27 +42,16 @@ jobs:
         echo "sdk.dir=$ANDROID_HOME" > local.properties
         echo "ndk.dir=$ANDROID_HOME/ndk/26.1.10909125" >> local.properties
 
-    - name: Setup Gradle wrapper
-      run: |
-        GRADLE_VER="8.4"
-        wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -O /tmp/gradle.zip
-        unzip -q /tmp/gradle.zip -d /tmp/
-        mkdir -p gradle/wrapper
-        cp /tmp/gradle-${GRADLE_VER}/lib/gradle-wrapper-*.jar gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
-        if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-          echo "Wrapper jar not found in lib, trying subprojects..."
-          find /tmp/gradle-${GRADLE_VER} -name "gradle-wrapper*.jar" -exec cp {} gradle/wrapper/gradle-wrapper.jar \;
-        fi
-        printf '#!/bin/sh\nAPP_HOME=$(cd "$(dirname "$0")" && pwd -P)\nCLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar\nJAVACMD=java\nif [ -n "$JAVA_HOME" ]; then JAVACMD="$JAVA_HOME/bin/java"; fi\nexec "$JAVACMD" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"\n' > gradlew
-        chmod +x gradlew
-        ls -la gradle/wrapper/
-        rm -rf /tmp/gradle*
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        gradle-version: '8.4'
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --stacktrace
+      run: gradle assembleDebug --stacktrace
 
-    - name: Build Release APK (unsigned)
-      run: ./gradlew assembleRelease --stacktrace
+    - name: Build Release APK
+      run: gradle assembleRelease --stacktrace
 
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
