@@ -1,0 +1,61 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.yolov8ncnn'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.yolov8ncnn"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared",
+                          "-DANDROID_PLATFORM=android-26"
+                cppFlags "-std=c++17 -O3 -ffast-math"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            jniDebuggable true
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/jni/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    packagingOptions {
+        pickFirst 'lib/arm64-v8a/libc++_shared.so'
+        pickFirst 'lib/armeabi-v7a/libc++_shared.so'
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+}

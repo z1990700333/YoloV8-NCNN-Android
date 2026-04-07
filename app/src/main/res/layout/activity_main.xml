@@ -1,0 +1,489 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF1A1A2E"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- Title -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="YOLOv8 NCNN Detector"
+            android:textColor="#FFFFFFFF"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:paddingBottom="16dp" />
+
+        <!-- ═══ Permissions Section ═══ -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Permissions"
+            android:textColor="#FF00BCD4"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:paddingBottom="8dp" />
+
+        <!-- Overlay Permission -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="4dp">
+            <Button
+                android:id="@+id/btn_grant_overlay"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:text="Overlay"
+                android:textSize="12sp"
+                android:textAllCaps="false" />
+            <TextView
+                android:id="@+id/tv_overlay_status"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:text="Checking..."
+                android:textSize="12sp"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <!-- Accessibility Permission -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="4dp">
+            <Button
+                android:id="@+id/btn_grant_accessibility"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:text="Accessibility"
+                android:textSize="12sp"
+                android:textAllCaps="false" />
+            <TextView
+                android:id="@+id/tv_accessibility_status"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:text="Checking..."
+                android:textSize="12sp"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <!-- Storage Permission -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="4dp">
+            <Button
+                android:id="@+id/btn_grant_storage"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:text="Storage"
+                android:textSize="12sp"
+                android:textAllCaps="false" />
+            <TextView
+                android:id="@+id/tv_storage_status"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:text="Checking..."
+                android:textSize="12sp"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <!-- Notification Permission -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="12dp">
+            <Button
+                android:id="@+id/btn_grant_notification"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:text="Notification"
+                android:textSize="12sp"
+                android:textAllCaps="false" />
+            <TextView
+                android:id="@+id/tv_notification_status"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:text="Checking..."
+                android:textSize="12sp"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF" />
+
+        <!-- ═══ Model Section ═══ -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Model"
+            android:textColor="#FF00BCD4"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:paddingTop="12dp"
+            android:paddingBottom="8dp" />
+
+        <!-- Param file -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="4dp">
+            <Button
+                android:id="@+id/btn_select_param"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="Select .param"
+                android:textSize="12sp"
+                android:textAllCaps="false" />
+            <TextView
+                android:id="@+id/tv_param_path"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Not selected"
+                android:textColor="#AAFFFFFF"
+                android:textSize="12sp"
+                android:paddingStart="8dp"
+                android:singleLine="true"
+                android:ellipsize="middle" />
+        </LinearLayout>
+
+        <!-- Bin file -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="8dp">
+            <Button
+                android:id="@+id/btn_select_bin"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:text="Select .bin"
+                android:textSize="12sp"
+                android:textAllCaps="false" />
+            <TextView
+                android:id="@+id/tv_bin_path"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Not selected"
+                android:textColor="#AAFFFFFF"
+                android:textSize="12sp"
+                android:paddingStart="8dp"
+                android:singleLine="true"
+                android:ellipsize="middle" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_load_model"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Load Model"
+            android:textAllCaps="false"
+            android:backgroundTint="#FF2196F3" />
+
+        <TextView
+            android:id="@+id/tv_model_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Model: Not loaded"
+            android:textColor="#FFFFC107"
+            android:textSize="14sp"
+            android:gravity="center"
+            android:paddingTop="4dp"
+            android:paddingBottom="12dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF" />
+
+        <!-- ═══ Inference Settings ═══ -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Inference Settings"
+            android:textColor="#FF00BCD4"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:paddingTop="12dp"
+            android:paddingBottom="8dp" />
+
+        <!-- Confidence threshold -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:text="Confidence:"
+                android:textColor="#DDFFFFFF"
+                android:textSize="13sp" />
+            <SeekBar
+                android:id="@+id/seek_conf_thresh"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+            <TextView
+                android:id="@+id/tv_conf_value"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:text="0.35"
+                android:textColor="#FFFFFFFF"
+                android:textSize="13sp"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <!-- NMS threshold -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:text="NMS Thresh:"
+                android:textColor="#DDFFFFFF"
+                android:textSize="13sp" />
+            <SeekBar
+                android:id="@+id/seek_nms_thresh"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+            <TextView
+                android:id="@+id/tv_nms_value"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:text="0.45"
+                android:textColor="#FFFFFFFF"
+                android:textSize="13sp"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <!-- Capture scale -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:text="Capture Scale:"
+                android:textColor="#DDFFFFFF"
+                android:textSize="13sp" />
+            <SeekBar
+                android:id="@+id/seek_capture_scale"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+            <TextView
+                android:id="@+id/tv_capture_scale_value"
+                android:layout_width="50dp"
+                android:layout_height="wrap_content"
+                android:text="50%"
+                android:textColor="#FFFFFFFF"
+                android:textSize="13sp"
+                android:gravity="center" />
+        </LinearLayout>
+
+        <!-- Target size -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingTop="8dp">
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:text="Input Size:"
+                android:textColor="#DDFFFFFF"
+                android:textSize="13sp" />
+            <Spinner
+                android:id="@+id/spinner_target_size"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <!-- Threads -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingTop="4dp">
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:text="Threads:"
+                android:textColor="#DDFFFFFF"
+                android:textSize="13sp" />
+            <Spinner
+                android:id="@+id/spinner_threads"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <!-- GPU -->
+        <CheckBox
+            android:id="@+id/cb_use_gpu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Use GPU (Vulkan)"
+            android:textColor="#DDFFFFFF"
+            android:textSize="13sp"
+            android:paddingTop="4dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF"
+            android:layout_marginTop="12dp" />
+
+        <!-- ═══ Auto Click Settings ═══ -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Auto Click"
+            android:textColor="#FF00BCD4"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:paddingTop="12dp"
+            android:paddingBottom="8dp" />
+
+        <!-- Target label -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="4dp">
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:text="Target Label:"
+                android:textColor="#DDFFFFFF"
+                android:textSize="13sp" />
+            <EditText
+                android:id="@+id/et_target_label"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:hint="-1 = all"
+                android:textColor="#FFFFFFFF"
+                android:textColorHint="#55FFFFFF"
+                android:textSize="13sp"
+                android:inputType="numberSigned"
+                android:background="#33FFFFFF"
+                android:paddingStart="8dp" />
+        </LinearLayout>
+
+        <!-- Click delay -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="8dp">
+            <TextView
+                android:layout_width="120dp"
+                android:layout_height="wrap_content"
+                android:text="Click Delay(ms):"
+                android:textColor="#DDFFFFFF"
+                android:textSize="13sp" />
+            <EditText
+                android:id="@+id/et_click_delay"
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_weight="1"
+                android:hint="500"
+                android:textColor="#FFFFFFFF"
+                android:textColorHint="#55FFFFFF"
+                android:textSize="13sp"
+                android:inputType="number"
+                android:background="#33FFFFFF"
+                android:paddingStart="8dp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_save_settings"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:text="Save Settings"
+            android:textAllCaps="false"
+            android:backgroundTint="#FF607D8B" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF"
+            android:layout_marginTop="12dp" />
+
+        <!-- ═══ Actions ═══ -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Actions"
+            android:textColor="#FF00BCD4"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:paddingTop="12dp"
+            android:paddingBottom="8dp" />
+
+        <Button
+            android:id="@+id/btn_start_overlay"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Start Overlay"
+            android:textAllCaps="false"
+            android:backgroundTint="#FF9C27B0" />
+
+        <Button
+            android:id="@+id/btn_start_capture"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Start Screen Capture"
+            android:textAllCaps="false"
+            android:backgroundTint="#FF4CAF50"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tip: Start overlay first, then start capture.\nUse the floating panel to control detection."
+            android:textColor="#88FFFFFF"
+            android:textSize="11sp"
+            android:paddingTop="12dp"
+            android:paddingBottom="24dp" />
+
+    </LinearLayout>
+</ScrollView>

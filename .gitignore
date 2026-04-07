@@ -1,0 +1,22 @@
+# Build outputs
+/build/
+/app/build/
+/.gradle/
+
+# Local properties
+local.properties
+
+# NCNN prebuilt (downloaded in CI)
+app/src/main/jni/ncnn-android-vulkan/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Gradle wrapper jar (will be generated)
+!gradle/wrapper/gradle-wrapper.jar

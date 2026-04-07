@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#DD000000"
+    android:padding="10dp"
+    android:minWidth="220dp">
+
+    <!-- Title bar -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="YOLOv8 NCNN"
+        android:textColor="#FF00BCD4"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:paddingBottom="6dp" />
+
+    <!-- FPS -->
+    <TextView
+        android:id="@+id/tv_fps"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="FPS: --"
+        android:textColor="#FF4CAF50"
+        android:textSize="13sp" />
+
+    <!-- Inference time -->
+    <TextView
+        android:id="@+id/tv_infer_time"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Infer: --"
+        android:textColor="#FFFFC107"
+        android:textSize="13sp" />
+
+    <!-- Detection count -->
+    <TextView
+        android:id="@+id/tv_detections"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Detect: --"
+        android:textColor="#FFFFFFFF"
+        android:textSize="13sp" />
+
+    <!-- Click coordinate -->
+    <TextView
+        android:id="@+id/tv_click_coord"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Click: Not set"
+        android:textColor="#FFAAAAAA"
+        android:textSize="12sp"
+        android:paddingTop="4dp" />
+
+    <!-- Status message -->
+    <TextView
+        android:id="@+id/tv_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textColor="#FFFFFF00"
+        android:textSize="11sp"
+        android:visibility="gone"
+        android:paddingTop="4dp" />
+
+    <!-- Buttons row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingTop="6dp">
+
+        <Button
+            android:id="@+id/btn_toggle"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:text="Start"
+            android:textSize="11sp"
+            android:textAllCaps="false"
+            android:backgroundTint="#FF4CAF50"
+            android:layout_marginEnd="4dp" />
+
+        <Button
+            android:id="@+id/btn_set_click"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:text="Set Click Pos"
+            android:textSize="10sp"
+            android:textAllCaps="false"
+            android:backgroundTint="#FF2196F3"
+            android:layout_marginEnd="4dp" />
+
+        <Button
+            android:id="@+id/btn_auto_click"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_weight="1"
+            android:text="AutoClick: OFF"
+            android:textSize="10sp"
+            android:textAllCaps="false"
+            android:backgroundTint="#FF757575" />
+    </LinearLayout>
+
+</LinearLayout>
