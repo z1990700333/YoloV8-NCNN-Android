@@ -1,12 +1,9 @@
-// yolov8ncnn_jni.cpp
-// High-performance YOLOv8 NCNN inference engine with JNI bridge
-
+// yolov8ncnn_jni.cpp - YOLOv8 DFL detection head + NCNN JNI bridge
 #include <jni.h>
 #include <android/log.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 #include <android/bitmap.h>
-
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -15,10 +12,8 @@
 #include <mutex>
 #include <fstream>
 #include <sstream>
-
 #include "net.h"
 #include "cpu.h"
-
 #if NCNN_VULKAN
 #include "gpu.h"
 #endif
@@ -28,437 +23,277 @@
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
-struct BoxInfo {
-    float x1, y1, x2, y2;
-    float score;
-    int label;
-};
-
-// ═══ NMS ═══════════════════════════════════════════════════════════════════
+struct BoxInfo { float x1, y1, x2, y2, score; int label; };
 
 static inline float intersection_area(const BoxInfo& a, const BoxInfo& b) {
-    float iw = std::max(0.0f, std::min(a.x2, b.x2) - std::max(a.x1, b.x1));
-    float ih = std::max(0.0f, std::min(a.y2, b.y2) - std::max(a.y1, b.y1));
+    float iw = std::max(0.f, std::min(a.x2, b.x2) - std::max(a.x1, b.x1));
+    float ih = std::max(0.f, std::min(a.y2, b.y2) - std::max(a.y1, b.y1));
     return iw * ih;
 }
 
-static void nms_sorted(std::vector<BoxInfo>& boxes, float nms_threshold) {
-    std::vector<BoxInfo> result;
-    std::vector<bool> suppressed(boxes.size(), false);
+static void nms_sorted(std::vector<BoxInfo>& boxes, float nms_thresh) {
+    std::vector<BoxInfo> res;
+    std::vector<bool> sup(boxes.size(), false);
     for (size_t i = 0; i < boxes.size(); i++) {
-        if (suppressed[i]) continue;
-        result.push_back(boxes[i]);
-        float area_i = (boxes[i].x2 - boxes[i].x1) * (boxes[i].y2 - boxes[i].y1);
+        if (sup[i]) continue;
+        res.push_back(boxes[i]);
+        float ai = (boxes[i].x2 - boxes[i].x1) * (boxes[i].y2 - boxes[i].y1);
         for (size_t j = i + 1; j < boxes.size(); j++) {
-            if (suppressed[j] || boxes[i].label != boxes[j].label) continue;
+            if (sup[j] || boxes[i].label != boxes[j].label) continue;
             float inter = intersection_area(boxes[i], boxes[j]);
-            float area_j = (boxes[j].x2 - boxes[j].x1) * (boxes[j].y2 - boxes[j].y1);
-            if (inter / (area_i + area_j - inter + 1e-5f) > nms_threshold)
-                suppressed[j] = true;
+            float aj = (boxes[j].x2 - boxes[j].x1) * (boxes[j].y2 - boxes[j].y1);
+            if (inter / (ai + aj - inter + 1e-5f) > nms_thresh) sup[j] = true;
         }
     }
-    boxes = std::move(result);
+    boxes = std::move(res);
 }
 
-// ═══ Sigmoid ══════════════════════════════════════════════════════════════
+static inline float sigmoid(float x) { return 1.f / (1.f + expf(-x)); }
 
-static inline float sigmoid(float x) {
-    return 1.0f / (1.0f + expf(-x));
+// DFL: softmax over reg_max values then weighted sum -> distance
+static inline float dfl_decode(const float* src, int reg_max) {
+    float maxv = src[0];
+    for (int i = 1; i < reg_max; i++) if (src[i] > maxv) maxv = src[i];
+    float sum = 0.f, buf[16];
+    for (int i = 0; i < reg_max; i++) { buf[i] = expf(src[i] - maxv); sum += buf[i]; }
+    float val = 0.f;
+    for (int i = 0; i < reg_max; i++) val += (buf[i] / sum) * i;
+    return val;
 }
 
-// ═══ Auto-detect blob names from .param file ══════════════════════════════
-
-static void detect_blob_names(const char* paramPath,
-                               std::string& inputName, std::string& outputName) {
-    // Default names
-    inputName = "images";
-    outputName = "output0";
-
-    std::ifstream file(paramPath);
-    if (!file.is_open()) {
-        LOGW("Cannot open param file for blob detection: %s", paramPath);
-        return;
-    }
-
-    std::string line;
-    std::string firstBlobName;
-    std::string lastBlobName;
-    int lineNum = 0;
-
-    // Parse .param format:
-    // Line 0: magic number (7767517)
-    // Line 1: layer_count blob_count
-    // Line 2+: layer_type layer_name input_count output_count input_blobs... output_blobs... params...
-
-    while (std::getline(file, line)) {
-        lineNum++;
-        if (lineNum <= 2) continue; // Skip header
-
+// Auto-detect blob names from .param file
+static void detect_blob_names(const char* path, std::string& inN, std::string& outN) {
+    inN = "images"; outN = "output0";
+    std::ifstream f(path); if (!f.is_open()) return;
+    std::string line; int ln = 0; std::string last;
+    while (std::getline(f, line)) {
+        ln++; if (ln <= 2) continue;
         std::istringstream iss(line);
-        std::string layerType, layerName;
-        int inputCount, outputCount;
-
-        if (!(iss >> layerType >> layerName >> inputCount >> outputCount)) continue;
-
-        // Read input blob names
-        std::vector<std::string> inputs(inputCount);
-        for (int i = 0; i < inputCount; i++) iss >> inputs[i];
-
-        // Read output blob names
-        std::vector<std::string> outputs(outputCount);
-        for (int i = 0; i < outputCount; i++) iss >> outputs[i];
-
-        // First Input layer's output blob = model input
-        if (layerType == "Input" && outputCount > 0) {
-            inputName = outputs[0];
-        }
-
-        // Track last layer's output blob = model output
-        if (outputCount > 0) {
-            lastBlobName = outputs[outputCount - 1];
-        }
+        std::string lt, nm; int ic, oc;
+        if (!(iss >> lt >> nm >> ic >> oc)) continue;
+        std::vector<std::string> ins(ic); for (int i=0;i<ic;i++) iss>>ins[i];
+        std::vector<std::string> outs(oc); for (int i=0;i<oc;i++) iss>>outs[i];
+        if (lt == "Input" && oc > 0) inN = outs[0];
+        if (oc > 0) last = outs[oc-1];
     }
-
-    if (!lastBlobName.empty()) {
-        outputName = lastBlobName;
-    }
-
-    LOGI("Auto-detected blobs: input='%s', output='%s'", inputName.c_str(), outputName.c_str());
+    if (!last.empty()) outN = last;
+    LOGI("Blobs: in='%s' out='%s'", inN.c_str(), outN.c_str());
 }
 
-// ═══ YoloV8 Detector ═════════════════════════════════════════════════════
+struct Anchor { float cx, cy; int stride; };
 
 class YoloV8Detector {
 public:
     YoloV8Detector() = default;
     ~YoloV8Detector() { net_.clear(); }
 
-    bool loadModelFromPath(const char* paramPath, const char* binPath,
-                           int targetSize, bool useGpu, int numThreads) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        net_.clear();
-        blob_pool_.clear();
-        workspace_pool_.clear();
-
-        targetSize_ = targetSize;
-        numThreads_ = numThreads;
-
-        ncnn::set_cpu_powersave(2);
-        ncnn::set_omp_num_threads(numThreads);
-
-        net_.opt = ncnn::Option();
-        net_.opt.lightmode = true;
-        net_.opt.num_threads = numThreads;
-        net_.opt.blob_allocator = &blob_pool_;
-        net_.opt.workspace_allocator = &workspace_pool_;
-        net_.opt.use_packing_layout = true;
-        net_.opt.use_fp16_packed = true;
-        net_.opt.use_fp16_storage = true;
-
-#if NCNN_VULKAN
-        hasGpu_ = useGpu && (ncnn::get_gpu_count() > 0);
-        net_.opt.use_vulkan_compute = hasGpu_;
-        if (hasGpu_) {
-            net_.opt.use_fp16_arithmetic = true;
-            LOGI("Vulkan GPU enabled");
-        }
-#else
-        hasGpu_ = false;
-#endif
-
-        // Auto-detect blob names BEFORE loading
-        detect_blob_names(paramPath, inputBlobName_, outputBlobName_);
-
-        int ret = net_.load_param(paramPath);
-        if (ret != 0) { LOGE("load_param failed: %s ret=%d", paramPath, ret); return false; }
-        ret = net_.load_model(binPath);
-        if (ret != 0) { LOGE("load_model failed: %s ret=%d", binPath, ret); return false; }
-
+    bool loadModelFromPath(const char* pp, const char* bp, int ts, bool gpu, int nt) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        net_.clear(); bpool_.clear(); wpool_.clear();
+        tsize_ = ts; nthr_ = nt;
+        ncnn::set_cpu_powersave(2); ncnn::set_omp_num_threads(nt);
+        setupOpt(gpu);
+        detect_blob_names(pp, inB_, outB_);
+        if (net_.load_param(pp) != 0) { LOGE("load_param fail"); return false; }
+        if (net_.load_model(bp) != 0) { LOGE("load_model fail"); return false; }
         loaded_ = true;
-        LOGI("Model loaded: %s (target=%d, gpu=%d, threads=%d, in='%s', out='%s')",
-             paramPath, targetSize, (int)hasGpu_, numThreads,
-             inputBlobName_.c_str(), outputBlobName_.c_str());
+        LOGI("Model loaded: target=%d gpu=%d thr=%d", ts, (int)gpu_, nt);
         return true;
     }
 
-    bool loadModel(AAssetManager* mgr, const char* paramPath, const char* binPath,
-                   int targetSize, bool useGpu, int numThreads) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        net_.clear();
-        blob_pool_.clear();
-        workspace_pool_.clear();
-
-        targetSize_ = targetSize;
-        numThreads_ = numThreads;
-
-        ncnn::set_cpu_powersave(2);
-        ncnn::set_omp_num_threads(numThreads);
-
-        net_.opt = ncnn::Option();
-        net_.opt.lightmode = true;
-        net_.opt.num_threads = numThreads;
-        net_.opt.blob_allocator = &blob_pool_;
-        net_.opt.workspace_allocator = &workspace_pool_;
-        net_.opt.use_packing_layout = true;
-        net_.opt.use_fp16_packed = true;
-        net_.opt.use_fp16_storage = true;
-
-#if NCNN_VULKAN
-        hasGpu_ = useGpu && (ncnn::get_gpu_count() > 0);
-        net_.opt.use_vulkan_compute = hasGpu_;
-        if (hasGpu_) net_.opt.use_fp16_arithmetic = true;
-#else
-        hasGpu_ = false;
-#endif
-
-        // Use default blob names for assets
-        inputBlobName_ = "images";
-        outputBlobName_ = "output0";
-
-        int ret = net_.load_param(mgr, paramPath);
-        if (ret != 0) { LOGE("load_param failed: %d", ret); return false; }
-        ret = net_.load_model(mgr, binPath);
-        if (ret != 0) { LOGE("load_model failed: %d", ret); return false; }
-
-        loaded_ = true;
-        return true;
+    bool loadModel(AAssetManager* mgr, const char* pp, const char* bp, int ts, bool gpu, int nt) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        net_.clear(); bpool_.clear(); wpool_.clear();
+        tsize_ = ts; nthr_ = nt;
+        ncnn::set_cpu_powersave(2); ncnn::set_omp_num_threads(nt);
+        setupOpt(gpu);
+        inB_ = "images"; outB_ = "output0";
+        if (net_.load_param(mgr, pp) != 0) return false;
+        if (net_.load_model(mgr, bp) != 0) return false;
+        loaded_ = true; return true;
     }
 
-    std::vector<BoxInfo> detect(const unsigned char* pixels, int pixelType,
-                                int imgW, int imgH,
-                                float confThresh, float nmsThresh,
-                                float& inferTimeMs) {
-        std::vector<BoxInfo> results;
-        if (!loaded_) return results;
-
+    std::vector<BoxInfo> detect(const unsigned char* px, int pxT, int iW, int iH,
+                                float cTh, float nTh, float& ms) {
+        std::vector<BoxInfo> res;
+        if (!loaded_) return res;
         auto t0 = std::chrono::high_resolution_clock::now();
 
-        // ── Letterbox resize ─────────────────────────────────────────────
-        float scale = std::min((float)targetSize_ / imgW, (float)targetSize_ / imgH);
-        int scaledW = (int)(imgW * scale);
-        int scaledH = (int)(imgH * scale);
-        int padW = (targetSize_ - scaledW) / 2;
-        int padH = (targetSize_ - scaledH) / 2;
+        // Letterbox
+        float sc = std::min((float)tsize_/iW, (float)tsize_/iH);
+        int sw = (int)(iW*sc), sh = (int)(iH*sc);
+        int pW = (tsize_-sw)/2, pH = (tsize_-sh)/2;
+        ncnn::Mat in = ncnn::Mat::from_pixels_resize(px, pxT, iW, iH, sw, sh);
+        ncnn::Mat inp;
+        ncnn::copy_make_border(in, inp, pH, tsize_-sh-pH, pW, tsize_-sw-pW,
+                               ncnn::BORDER_CONSTANT, 114.f);
+        const float nv[3] = {1.f/255.f, 1.f/255.f, 1.f/255.f};
+        inp.substract_mean_normalize(nullptr, nv);
 
-        ncnn::Mat in = ncnn::Mat::from_pixels_resize(
-            pixels, pixelType, imgW, imgH, scaledW, scaledH);
-
-        ncnn::Mat in_pad;
-        ncnn::copy_make_border(in, in_pad,
-            padH, targetSize_ - scaledH - padH,
-            padW, targetSize_ - scaledW - padW,
-            ncnn::BORDER_CONSTANT, 114.0f);
-
-        const float norm_vals[3] = {1.0f/255.0f, 1.0f/255.0f, 1.0f/255.0f};
-        in_pad.substract_mean_normalize(nullptr, norm_vals);
-
-        // ── Inference ────────────────────────────────────────────────────
         ncnn::Extractor ex = net_.create_extractor();
-        ex.set_light_mode(true);
-        ex.set_num_threads(numThreads_);
+        ex.set_light_mode(true); ex.set_num_threads(nthr_);
 #if NCNN_VULKAN
-        if (hasGpu_) ex.set_vulkan_compute(true);
+        if (gpu_) ex.set_vulkan_compute(true);
 #endif
+        ex.input(inB_.c_str(), inp);
+        ncnn::Mat out; ex.extract(outB_.c_str(), out);
 
-        ex.input(inputBlobName_.c_str(), in_pad);
+        LOGI("Out: dims=%d c=%d h=%d w=%d", out.dims, out.c, out.h, out.w);
 
-        ncnn::Mat out;
-        ex.extract(outputBlobName_.c_str(), out);
+        // Build anchor grid: strides 8,16,32
+        std::vector<Anchor> anc;
+        int strides[3] = {8, 16, 32};
+        for (int s = 0; s < 3; s++) {
+            int g = tsize_ / strides[s];
+            for (int y = 0; y < g; y++)
+                for (int x = 0; x < g; x++)
+                    anc.push_back({x+0.5f, y+0.5f, strides[s]});
+        }
+        int totAnc = (int)anc.size();
 
-        // ── Post-processing (auto-detect format) ─────────────────────────
-        // Format A (ultralytics): out.dims=2, out.h = 4+num_classes, out.w = num_anchors
-        //   → row(0..3) = cx,cy,w,h; row(4+c) = class score (already sigmoid)
-        // Format B (transposed): out.dims=3, out.c=1, out.h = num_anchors, out.w = 4+num_classes
-        //   → each row: cx,cy,w,h, cls0, cls1, ...
-        // Format C (with objectness, YOLOv5-style): out.w = 5+num_classes
-        //   → each row: cx,cy,w,h, obj_conf, cls0, cls1, ...
-
-        LOGI("Output shape: dims=%d c=%d h=%d w=%d", out.dims, out.c, out.h, out.w);
-
-        if (out.dims == 2 && out.h > out.w && out.h > 5) {
-            // Format A: [4+nc, anchors] — standard ultralytics NCNN export
-            parseFormatA(out, results, confThresh, padW, padH, scale, imgW, imgH);
-        } else if (out.dims == 2 && out.w > out.h) {
-            // Format B transposed in 2D: [anchors, 4+nc]
-            parseFormatB(out, results, confThresh, padW, padH, scale, imgW, imgH);
+        // Parse output shape
+        int fd = 0, na = 0; bool tr = false;
+        if (out.dims == 2) {
+            if (out.h < out.w) { fd=out.h; na=out.w; tr=false; }
+            else { fd=out.w; na=out.h; tr=true; }
         } else if (out.dims == 3) {
-            // Format B/C in 3D: c=1, h=anchors, w=4+nc or 5+nc
-            ncnn::Mat out2d = out.reshape(out.w, out.h);
-            parseFormatB(out2d, results, confThresh, padW, padH, scale, imgW, imgH);
-        } else {
-            LOGW("Unknown output format: dims=%d c=%d h=%d w=%d", out.dims, out.c, out.h, out.w);
+            fd=out.w; na=out.h; tr=true;
+        } else { LOGW("dims=%d unsupported", out.dims); goto end; }
+
+        LOGI("fd=%d na=%d tr=%d exp=%d", fd, na, (int)tr, totAnc);
+
+        // Fix anchor count if mismatch
+        if (na != totAnc) {
+            anc.clear();
+            int g0=tsize_/8, g1=tsize_/16, g2=tsize_/32;
+            if (g0*g0+g1*g1+g2*g2 == na) {
+                for(int y=0;y<g0;y++) for(int x=0;x<g0;x++) anc.push_back({x+.5f,y+.5f,8});
+                for(int y=0;y<g1;y++) for(int x=0;x<g1;x++) anc.push_back({x+.5f,y+.5f,16});
+                for(int y=0;y<g2;y++) for(int x=0;x<g2;x++) anc.push_back({x+.5f,y+.5f,32});
+            } else { LOGW("anchor mismatch na=%d", na); goto end; }
         }
 
-        // Sort + NMS
-        std::sort(results.begin(), results.end(),
-                  [](const BoxInfo& a, const BoxInfo& b){ return a.score > b.score; });
-        nms_sorted(results, nmsThresh);
+        {
+            // Check DFL: featDim = 4*16 + nc
+            int rm = 16, nc = fd - 4*rm;
+            if (nc >= 1 && nc <= 1000) {
+                // DFL format
+                LOGI("DFL: rm=%d nc=%d", rm, nc);
+                for (int i = 0; i < na && i < (int)anc.size(); i++) {
+                    float ft[256];
+                    if (!tr) { for(int f=0;f<fd;f++) ft[f]=out.row(f)[i]; }
+                    else { const float*r=out.row(i); for(int f=0;f<fd;f++) ft[f]=r[f]; }
 
+                    // Class scores (need sigmoid - raw from final Conv)
+                    float mx = -1e9f; int bc = 0;
+                    for (int c=0; c<nc; c++) {
+                        float s = sigmoid(ft[4*rm+c]);
+                        if (s > mx) { mx=s; bc=c; }
+                    }
+                    if (mx < cTh) continue;
+
+                    // DFL bbox decode
+                    float dl = dfl_decode(ft+0*rm, rm);
+                    float dt = dfl_decode(ft+1*rm, rm);
+                    float dr = dfl_decode(ft+2*rm, rm);
+                    float db = dfl_decode(ft+3*rm, rm);
+
+                    int st = anc[i].stride;
+                    float x1 = (anc[i].cx - dl) * st;
+                    float y1 = (anc[i].cy - dt) * st;
+                    float x2 = (anc[i].cx + dr) * st;
+                    float y2 = (anc[i].cy + db) * st;
+
+                    x1=(x1-pW)/sc; y1=(y1-pH)/sc; x2=(x2-pW)/sc; y2=(y2-pH)/sc;
+                    x1=std::max(0.f,std::min(x1,(float)iW));
+                    y1=std::max(0.f,std::min(y1,(float)iH));
+                    x2=std::max(0.f,std::min(x2,(float)iW));
+                    y2=std::max(0.f,std::min(y2,(float)iH));
+                    if (x2>x1 && y2>y1) res.push_back({x1,y1,x2,y2,mx,bc});
+                }
+            } else {
+                // Simple: 4+nc or 5+nc
+                nc = fd - 4; bool ho = false;
+                if (nc<1||nc>1000) { nc=fd-5; ho=true; }
+                if (nc<1||nc>1000) { LOGW("unknown fd=%d",fd); goto end; }
+                LOGI("Simple: nc=%d obj=%d", nc, (int)ho);
+                int co = ho ? 5 : 4;
+                for (int i=0; i<na && i<(int)anc.size(); i++) {
+                    float ft[2048];
+                    if(!tr){for(int f=0;f<fd;f++)ft[f]=out.row(f)[i];}
+                    else{const float*r=out.row(i);for(int f=0;f<fd;f++)ft[f]=r[f];}
+                    float oc=1.f;
+                    if(ho){oc=sigmoid(ft[4]);if(oc<cTh)continue;}
+                    float mx=-1e9f;int bc=0;
+                    for(int c=0;c<nc;c++){float s=ft[co+c];if(s>1.f||s<0.f)s=sigmoid(s);if(s>mx){mx=s;bc=c;}}
+                    float fs=mx*oc; if(fs<cTh)continue;
+                    float cx=ft[0],cy=ft[1],bw=ft[2],bh=ft[3];
+                    float x1=(cx-bw*.5f-pW)/sc,y1=(cy-bh*.5f-pH)/sc;
+                    float x2=(cx+bw*.5f-pW)/sc,y2=(cy+bh*.5f-pH)/sc;
+                    x1=std::max(0.f,std::min(x1,(float)iW));
+                    y1=std::max(0.f,std::min(y1,(float)iH));
+                    x2=std::max(0.f,std::min(x2,(float)iW));
+                    y2=std::max(0.f,std::min(y2,(float)iH));
+                    if(x2>x1&&y2>y1) res.push_back({x1,y1,x2,y2,fs,bc});
+                }
+            }
+        }
+
+        end:
+        std::sort(res.begin(), res.end(), [](const BoxInfo&a,const BoxInfo&b){return a.score>b.score;});
+        nms_sorted(res, nTh);
         auto t1 = std::chrono::high_resolution_clock::now();
-        inferTimeMs = std::chrono::duration<float, std::milli>(t1 - t0).count();
-
-        LOGI("Detect: %d boxes, %.1fms", (int)results.size(), inferTimeMs);
-        return results;
+        ms = std::chrono::duration<float, std::milli>(t1-t0).count();
+        LOGI("Detect: %d boxes %.1fms", (int)res.size(), ms);
+        return res;
     }
 
     bool isLoaded() const { return loaded_; }
-    bool hasGpu() const { return hasGpu_; }
+    bool hasGpu() const { return gpu_; }
 
 private:
-    // Format A: [4+nc, anchors] — rows are features, columns are anchors
-    void parseFormatA(const ncnn::Mat& out, std::vector<BoxInfo>& results,
-                      float confThresh, int padW, int padH, float scale, int imgW, int imgH) {
-        int numAnchors = out.w;
-        int numClasses = out.h - 4;
-        if (numClasses <= 0) return;
-
-        const float* ptr_cx = out.row(0);
-        const float* ptr_cy = out.row(1);
-        const float* ptr_w  = out.row(2);
-        const float* ptr_h  = out.row(3);
-
-        std::vector<const float*> cls_ptrs(numClasses);
-        for (int c = 0; c < numClasses; c++) cls_ptrs[c] = out.row(4 + c);
-
-        for (int i = 0; i < numAnchors; i++) {
-            float maxScore = -1.0f;
-            int bestClass = -1;
-            for (int c = 0; c < numClasses; c++) {
-                float s = cls_ptrs[c][i];
-                if (s > maxScore) { maxScore = s; bestClass = c; }
-            }
-            if (maxScore < confThresh) continue;
-
-            float cx = ptr_cx[i], cy = ptr_cy[i], bw = ptr_w[i], bh = ptr_h[i];
-            float x1 = (cx - bw*0.5f - padW) / scale;
-            float y1 = (cy - bh*0.5f - padH) / scale;
-            float x2 = (cx + bw*0.5f - padW) / scale;
-            float y2 = (cy + bh*0.5f - padH) / scale;
-            x1 = std::max(0.f, std::min(x1, (float)imgW));
-            y1 = std::max(0.f, std::min(y1, (float)imgH));
-            x2 = std::max(0.f, std::min(x2, (float)imgW));
-            y2 = std::max(0.f, std::min(y2, (float)imgH));
-            if (x2 > x1 && y2 > y1)
-                results.push_back({x1, y1, x2, y2, maxScore, bestClass});
-        }
+    void setupOpt(bool gpu) {
+        net_.opt = ncnn::Option();
+        net_.opt.lightmode = true;
+        net_.opt.num_threads = nthr_;
+        net_.opt.blob_allocator = &bpool_;
+        net_.opt.workspace_allocator = &wpool_;
+        net_.opt.use_packing_layout = true;
+        net_.opt.use_fp16_packed = true;
+        net_.opt.use_fp16_storage = true;
+#if NCNN_VULKAN
+        gpu_ = gpu && ncnn::get_gpu_count() > 0;
+        net_.opt.use_vulkan_compute = gpu_;
+        if (gpu_) { net_.opt.use_fp16_arithmetic = true; LOGI("Vulkan on"); }
+#else
+        gpu_ = false;
+#endif
     }
-
-    // Format B: [anchors, 4+nc] or [anchors, 5+nc] — rows are anchors
-    void parseFormatB(const ncnn::Mat& out, std::vector<BoxInfo>& results,
-                      float confThresh, int padW, int padH, float scale, int imgW, int imgH) {
-        int numAnchors = out.h;
-        int cols = out.w;
-
-        // Detect if objectness column exists (YOLOv5-style: 5+nc vs YOLOv8: 4+nc)
-        bool hasObj = false;
-        int numClasses;
-
-        // Heuristic: if cols-4 is a common class count (1,2,3,...,80,etc), it's YOLOv8 format
-        // If cols-5 is, it's YOLOv5 format with objectness
-        int nc4 = cols - 4;
-        int nc5 = cols - 5;
-
-        // Check first few rows to see if column 4 looks like objectness (0-1 range after sigmoid)
-        if (nc5 > 0 && numAnchors > 0) {
-            float sum4 = 0;
-            int check = std::min(numAnchors, 100);
-            for (int i = 0; i < check; i++) {
-                float v = out.row(i)[4];
-                // If raw values are large (not 0-1), they need sigmoid → likely objectness
-                sum4 += fabsf(v);
-            }
-            float avg4 = sum4 / check;
-            // YOLOv5 objectness is usually present; YOLOv8 class scores start at col 4
-            // If average absolute value at col4 is very different from cols 5+, it's objectness
-            hasObj = (nc5 >= 1 && nc5 <= 1000);
-            // Simple heuristic: if nc4 is reasonable, use YOLOv8 format
-            if (nc4 >= 1 && nc4 <= 1000) hasObj = false;
-        }
-
-        if (hasObj) {
-            numClasses = nc5;
-            LOGI("Format B with objectness: anchors=%d, classes=%d", numAnchors, numClasses);
-        } else {
-            numClasses = nc4;
-            LOGI("Format B (YOLOv8): anchors=%d, classes=%d", numAnchors, numClasses);
-        }
-
-        if (numClasses <= 0) return;
-
-        for (int i = 0; i < numAnchors; i++) {
-            const float* row = out.row(i);
-            float cx = row[0], cy = row[1], bw = row[2], bh = row[3];
-
-            float objConf = 1.0f;
-            int clsOffset = 4;
-            if (hasObj) {
-                objConf = sigmoid(row[4]);
-                clsOffset = 5;
-                if (objConf < confThresh) continue;
-            }
-
-            float maxScore = -1e9f;
-            int bestClass = -1;
-            for (int c = 0; c < numClasses; c++) {
-                float s = row[clsOffset + c];
-                if (s > maxScore) { maxScore = s; bestClass = c; }
-            }
-
-            // Apply sigmoid if scores look like raw logits (outside 0-1)
-            if (maxScore > 1.0f || maxScore < 0.0f) {
-                maxScore = sigmoid(maxScore);
-            }
-            float finalScore = maxScore * objConf;
-            if (finalScore < confThresh) continue;
-
-            float x1 = (cx - bw*0.5f - padW) / scale;
-            float y1 = (cy - bh*0.5f - padH) / scale;
-            float x2 = (cx + bw*0.5f - padW) / scale;
-            float y2 = (cy + bh*0.5f - padH) / scale;
-            x1 = std::max(0.f, std::min(x1, (float)imgW));
-            y1 = std::max(0.f, std::min(y1, (float)imgH));
-            x2 = std::max(0.f, std::min(x2, (float)imgW));
-            y2 = std::max(0.f, std::min(y2, (float)imgH));
-            if (x2 > x1 && y2 > y1)
-                results.push_back({x1, y1, x2, y2, finalScore, bestClass});
-        }
-    }
-
     ncnn::Net net_;
-    ncnn::UnlockedPoolAllocator blob_pool_;
-    ncnn::PoolAllocator workspace_pool_;
-    std::mutex mutex_;
-
-    std::string inputBlobName_ = "images";
-    std::string outputBlobName_ = "output0";
-    int targetSize_ = 640;
-    int numThreads_ = 4;
-    bool hasGpu_ = false;
-    bool loaded_ = false;
+    ncnn::UnlockedPoolAllocator bpool_;
+    ncnn::PoolAllocator wpool_;
+    std::mutex mtx_;
+    std::string inB_="images", outB_="output0";
+    int tsize_=640, nthr_=4;
+    bool gpu_=false, loaded_=false;
 };
 
-// ═══ Global ═══════════════════════════════════════════════════════════════
-
-static YoloV8Detector g_detector;
-
-// ═══ JNI ══════════════════════════════════════════════════════════════════
+static YoloV8Detector g_det;
 
 extern "C" {
 
 JNIEXPORT void JNICALL
-Java_com_yolov8ncnn_YoloV8Ncnn_nativeInit(JNIEnv* env, jclass clazz) {
+Java_com_yolov8ncnn_YoloV8Ncnn_nativeInit(JNIEnv*, jclass) {
 #if NCNN_VULKAN
     ncnn::create_gpu_instance();
-    LOGI("NCNN init, Vulkan GPU count: %d", ncnn::get_gpu_count());
+    LOGI("NCNN init, GPUs: %d", ncnn::get_gpu_count());
 #else
-    LOGI("NCNN init (CPU only)");
+    LOGI("NCNN init CPU");
 #endif
 }
 
 JNIEXPORT void JNICALL
-Java_com_yolov8ncnn_YoloV8Ncnn_nativeDestroy(JNIEnv* env, jclass clazz) {
+Java_com_yolov8ncnn_YoloV8Ncnn_nativeDestroy(JNIEnv*, jclass) {
 #if NCNN_VULKAN
     ncnn::destroy_gpu_instance();
 #endif
@@ -466,111 +301,89 @@ Java_com_yolov8ncnn_YoloV8Ncnn_nativeDestroy(JNIEnv* env, jclass clazz) {
 
 JNIEXPORT jboolean JNICALL
 Java_com_yolov8ncnn_YoloV8Ncnn_nativeLoadModel(
-        JNIEnv* env, jclass clazz, jobject assetManager,
-        jstring paramPath, jstring binPath,
-        jint targetSize, jboolean useGpu, jint numThreads) {
-    AAssetManager* mgr = AAssetManager_fromJava(env, assetManager);
-    const char* p = env->GetStringUTFChars(paramPath, nullptr);
-    const char* b = env->GetStringUTFChars(binPath, nullptr);
-    bool ok = g_detector.loadModel(mgr, p, b, targetSize, useGpu, numThreads);
-    env->ReleaseStringUTFChars(paramPath, p);
-    env->ReleaseStringUTFChars(binPath, b);
+    JNIEnv* env, jclass, jobject am, jstring jp, jstring jb,
+    jint ts, jboolean gpu, jint nt) {
+    AAssetManager* mgr = AAssetManager_fromJava(env, am);
+    const char* p=env->GetStringUTFChars(jp,0);
+    const char* b=env->GetStringUTFChars(jb,0);
+    bool ok = g_det.loadModel(mgr,p,b,ts,gpu,nt);
+    env->ReleaseStringUTFChars(jp,p);
+    env->ReleaseStringUTFChars(jb,b);
     return (jboolean)ok;
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_yolov8ncnn_YoloV8Ncnn_nativeLoadModelPath(
-        JNIEnv* env, jclass clazz,
-        jstring paramPath, jstring binPath,
-        jint targetSize, jboolean useGpu, jint numThreads) {
-    const char* p = env->GetStringUTFChars(paramPath, nullptr);
-    const char* b = env->GetStringUTFChars(binPath, nullptr);
-    bool ok = g_detector.loadModelFromPath(p, b, targetSize, useGpu, numThreads);
-    env->ReleaseStringUTFChars(paramPath, p);
-    env->ReleaseStringUTFChars(binPath, b);
+    JNIEnv* env, jclass, jstring jp, jstring jb,
+    jint ts, jboolean gpu, jint nt) {
+    const char* p=env->GetStringUTFChars(jp,0);
+    const char* b=env->GetStringUTFChars(jb,0);
+    bool ok = g_det.loadModelFromPath(p,b,ts,gpu,nt);
+    env->ReleaseStringUTFChars(jp,p);
+    env->ReleaseStringUTFChars(jb,b);
     return (jboolean)ok;
 }
 
 JNIEXPORT jfloatArray JNICALL
 Java_com_yolov8ncnn_YoloV8Ncnn_nativeDetectBitmap(
-        JNIEnv* env, jclass clazz, jobject bitmap,
-        jfloat confThresh, jfloat nmsThresh) {
+    JNIEnv* env, jclass, jobject bmp, jfloat cTh, jfloat nTh) {
     AndroidBitmapInfo info;
-    AndroidBitmap_getInfo(env, bitmap, &info);
-    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-        LOGE("Bitmap not RGBA_8888: %d", info.format);
-        return nullptr;
-    }
-    void* pixels = nullptr;
-    AndroidBitmap_lockPixels(env, bitmap, &pixels);
-    if (!pixels) { LOGE("lockPixels failed"); return nullptr; }
-
-    float inferTimeMs = 0;
-    auto boxes = g_detector.detect((const unsigned char*)pixels,
-        ncnn::Mat::PIXEL_RGBA2RGB, info.width, info.height,
-        confThresh, nmsThresh, inferTimeMs);
-    AndroidBitmap_unlockPixels(env, bitmap);
-
-    int n = (int)boxes.size();
-    int sz = 2 + n * 6;
-    std::vector<float> data(sz);
-    data[0] = inferTimeMs; data[1] = (float)n;
-    for (int i = 0; i < n; i++) {
-        int o = 2 + i*6;
-        data[o]=boxes[i].x1; data[o+1]=boxes[i].y1;
-        data[o+2]=boxes[i].x2; data[o+3]=boxes[i].y2;
-        data[o+4]=boxes[i].score; data[o+5]=(float)boxes[i].label;
-    }
-    jfloatArray result = env->NewFloatArray(sz);
-    env->SetFloatArrayRegion(result, 0, sz, data.data());
-    return result;
+    AndroidBitmap_getInfo(env, bmp, &info);
+    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return nullptr;
+    void* px=nullptr;
+    AndroidBitmap_lockPixels(env, bmp, &px);
+    if (!px) return nullptr;
+    float ms=0;
+    auto boxes = g_det.detect((const unsigned char*)px, ncnn::Mat::PIXEL_RGBA2RGB,
+                              info.width, info.height, cTh, nTh, ms);
+    AndroidBitmap_unlockPixels(env, bmp);
+    int n=(int)boxes.size(), sz=2+n*6;
+    std::vector<float> d(sz);
+    d[0]=ms; d[1]=(float)n;
+    for(int i=0;i<n;i++){int o=2+i*6;
+        d[o]=boxes[i].x1;d[o+1]=boxes[i].y1;
+        d[o+2]=boxes[i].x2;d[o+3]=boxes[i].y2;
+        d[o+4]=boxes[i].score;d[o+5]=(float)boxes[i].label;}
+    jfloatArray r=env->NewFloatArray(sz);
+    env->SetFloatArrayRegion(r,0,sz,d.data());
+    return r;
 }
 
 JNIEXPORT jfloatArray JNICALL
 Java_com_yolov8ncnn_YoloV8Ncnn_nativeDetectBuffer(
-        JNIEnv* env, jclass clazz,
-        jobject pixelBuffer, jint width, jint height, jint rowStride,
-        jfloat confThresh, jfloat nmsThresh) {
-    uint8_t* bufPtr = (uint8_t*)env->GetDirectBufferAddress(pixelBuffer);
-    if (!bufPtr) { LOGE("GetDirectBufferAddress failed"); return nullptr; }
-
-    int expected = width * 4;
-    std::vector<uint8_t> compact;
-    const unsigned char* pixels = bufPtr;
-    if (rowStride != expected) {
-        compact.resize(width * height * 4);
-        for (int y = 0; y < height; y++)
-            memcpy(compact.data() + y*expected, bufPtr + y*rowStride, expected);
-        pixels = compact.data();
+    JNIEnv* env, jclass, jobject buf, jint w, jint h, jint rs,
+    jfloat cTh, jfloat nTh) {
+    uint8_t* bp=(uint8_t*)env->GetDirectBufferAddress(buf);
+    if (!bp) return nullptr;
+    int exp=w*4; std::vector<uint8_t> cmp;
+    const unsigned char* px=bp;
+    if (rs!=exp) {
+        cmp.resize(w*h*4);
+        for(int y=0;y<h;y++) memcpy(cmp.data()+y*exp,bp+y*rs,exp);
+        px=cmp.data();
     }
-
-    float inferTimeMs = 0;
-    auto boxes = g_detector.detect(pixels, ncnn::Mat::PIXEL_RGBA2RGB,
-        width, height, confThresh, nmsThresh, inferTimeMs);
-
-    int n = (int)boxes.size();
-    int sz = 2 + n*6;
-    std::vector<float> data(sz);
-    data[0] = inferTimeMs; data[1] = (float)n;
-    for (int i = 0; i < n; i++) {
-        int o = 2+i*6;
-        data[o]=boxes[i].x1; data[o+1]=boxes[i].y1;
-        data[o+2]=boxes[i].x2; data[o+3]=boxes[i].y2;
-        data[o+4]=boxes[i].score; data[o+5]=(float)boxes[i].label;
-    }
-    jfloatArray result = env->NewFloatArray(sz);
-    env->SetFloatArrayRegion(result, 0, sz, data.data());
-    return result;
+    float ms=0;
+    auto boxes=g_det.detect(px,ncnn::Mat::PIXEL_RGBA2RGB,w,h,cTh,nTh,ms);
+    int n=(int)boxes.size(),sz=2+n*6;
+    std::vector<float> d(sz);
+    d[0]=ms;d[1]=(float)n;
+    for(int i=0;i<n;i++){int o=2+i*6;
+        d[o]=boxes[i].x1;d[o+1]=boxes[i].y1;
+        d[o+2]=boxes[i].x2;d[o+3]=boxes[i].y2;
+        d[o+4]=boxes[i].score;d[o+5]=(float)boxes[i].label;}
+    jfloatArray r=env->NewFloatArray(sz);
+    env->SetFloatArrayRegion(r,0,sz,d.data());
+    return r;
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_yolov8ncnn_YoloV8Ncnn_nativeIsLoaded(JNIEnv* env, jclass clazz) {
-    return (jboolean)g_detector.isLoaded();
+Java_com_yolov8ncnn_YoloV8Ncnn_nativeIsLoaded(JNIEnv*, jclass) {
+    return (jboolean)g_det.isLoaded();
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_yolov8ncnn_YoloV8Ncnn_nativeHasGpu(JNIEnv* env, jclass clazz) {
-    return (jboolean)g_detector.hasGpu();
+Java_com_yolov8ncnn_YoloV8Ncnn_nativeHasGpu(JNIEnv*, jclass) {
+    return (jboolean)g_det.hasGpu();
 }
 
 } // extern "C"

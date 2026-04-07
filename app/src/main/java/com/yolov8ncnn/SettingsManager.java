@@ -137,7 +137,7 @@ public class SettingsManager {
 
     // ── Capture scale (0.25 - 1.0) ─────────────────────────────────────
     public float getCaptureScale() {
-        return prefs.getFloat(KEY_CAPTURE_SCALE, 0.5f);
+        return prefs.getFloat(KEY_CAPTURE_SCALE, 0.35f);
     }
 
     public void setCaptureScale(float scale) {

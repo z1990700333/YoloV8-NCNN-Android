@@ -389,18 +389,24 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupCallback() {
         new Thread(() -> {
-            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
-            ScreenCaptureService service = ScreenCaptureService.getInstance();
-            if (service != null) {
-                service.setCallback((boxes, inferTimeMs, fps, captureW, captureH) -> {
+            // 等待服务启动，最多等3秒
+            for (int i = 0; i < 30; i++) {
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                ScreenCaptureService service = ScreenCaptureService.getInstance();
+                if (service != null && ScreenCaptureService.isServiceRunning()) {
+                    Log.i(TAG, "ScreenCaptureService ready after " + (i*100) + "ms");
+                    service.setCallback((boxes, inferTimeMs, fps, captureW, captureH) -> {
+                        OverlayService overlay = OverlayService.getInstance();
+                        if (overlay != null) {
+                            overlay.updateDetections(boxes, inferTimeMs, fps, captureW, captureH);
+                        }
+                    });
                     OverlayService overlay = OverlayService.getInstance();
-                    if (overlay != null) {
-                        overlay.updateDetections(boxes, inferTimeMs, fps, captureW, captureH);
-                    }
-                });
+                    if (overlay != null) overlay.setCapturing(true);
+                    return;
+                }
             }
-            OverlayService overlay = OverlayService.getInstance();
-            if (overlay != null) overlay.setCapturing(true);
+            Log.e(TAG, "ScreenCaptureService did not start in time");
         }).start();
     }
 

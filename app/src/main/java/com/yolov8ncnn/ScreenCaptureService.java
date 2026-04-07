@@ -372,33 +372,37 @@ public class ScreenCaptureService extends Service {
                 return;
             }
 
-            // ★ 关键修复: 在关闭 Image 之前同步复制像素数据
-            final Image.Plane plane = image.getPlanes()[0];
-            final ByteBuffer srcBuffer = plane.getBuffer();
-            final int rowStride = plane.getRowStride();
-            final int pixelStride = plane.getPixelStride();
-            final int w = captureWidth;
-            final int h = captureHeight;
+            try {
+                // 在关闭 Image 之前同步复制像素数据
+                final Image.Plane plane = image.getPlanes()[0];
+                final ByteBuffer srcBuffer = plane.getBuffer();
+                final int rowStride = plane.getRowStride();
+                final int pixelStride = plane.getPixelStride();
+                final int w = captureWidth;
+                final int h = captureHeight;
 
-            // 复制到 Bitmap (最安全的方式)
-            final Bitmap bmp = Bitmap.createBitmap(
-                    w + (rowStride - pixelStride * w) / pixelStride, h,
-                    Bitmap.Config.ARGB_8888);
-            bmp.copyPixelsFromBuffer(srcBuffer);
-            image.close(); // 立即释放 Image
+                // 复制到 Bitmap
+                final Bitmap bmp = Bitmap.createBitmap(
+                        w + (rowStride - pixelStride * w) / pixelStride, h,
+                        Bitmap.Config.ARGB_8888);
+                bmp.copyPixelsFromBuffer(srcBuffer);
+                image.close();
 
-            // 裁剪掉 rowStride 多余的像素
-            final Bitmap cropped;
-            if (bmp.getWidth() != w) {
-                cropped = Bitmap.createBitmap(bmp, 0, 0, w, h);
-                bmp.recycle();
-            } else {
-                cropped = bmp;
-            }
+                // 裁剪掉 rowStride 多余的像素
+                final Bitmap cropped;
+                if (bmp.getWidth() != w) {
+                    cropped = Bitmap.createBitmap(bmp, 0, 0, w, h);
+                    bmp.recycle();
+                } else {
+                    cropped = bmp;
+                }
 
-            inferHandler.post(() -> {
+                // 直接在当前线程推理（imageReader callback 已在 inferHandler 线程）
                 try {
-                    if (!YoloV8Ncnn.nativeIsLoaded()) return;
+                    if (!YoloV8Ncnn.nativeIsLoaded()) {
+                        cropped.recycle();
+                        return;
+                    }
 
                     float confThresh = settings.getConfThresh();
                     float nmsThresh = settings.getNmsThresh();
@@ -420,11 +424,14 @@ public class ScreenCaptureService extends Service {
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "推理出错", e);
-                } finally {
                     if (!cropped.isRecycled()) cropped.recycle();
-                    inferBusy.set(false);
                 }
-            });
+            } catch (Exception e) {
+                Log.e(TAG, "图像处理出错", e);
+                try { image.close(); } catch (Exception ignored) {}
+            } finally {
+                inferBusy.set(false);
+            }
         }, inferHandler);
 
         virtualDisplay = mediaProjection.createVirtualDisplay(
