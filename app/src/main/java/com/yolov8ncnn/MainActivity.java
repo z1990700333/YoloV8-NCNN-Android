@@ -20,6 +20,8 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -35,9 +37,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 
-/**
- * Main activity with settings UI and permission management.
- */
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
@@ -52,9 +51,8 @@ public class MainActivity extends AppCompatActivity {
 
     private SettingsManager settings;
 
-    // UI elements
-    private SeekBar seekConfThresh, seekNmsThresh;
-    private TextView tvConfValue, tvNmsValue;
+    private SeekBar seekConfThresh, seekNmsThresh, seekCaptureScale;
+    private TextView tvConfValue, tvNmsValue, tvCaptureScaleValue;
     private Spinner spinnerTargetSize, spinnerThreads;
     private CheckBox cbUseGpu;
     private Button btnSelectParam, btnSelectBin, btnLoadModel;
@@ -62,9 +60,10 @@ public class MainActivity extends AppCompatActivity {
     private Button btnGrantOverlay, btnGrantAccessibility, btnGrantStorage, btnGrantNotification;
     private TextView tvParamPath, tvBinPath, tvModelStatus;
     private TextView tvOverlayStatus, tvAccessibilityStatus, tvStorageStatus, tvNotificationStatus;
+    private TextView tvRootStatus;
     private EditText etTargetLabel, etClickDelay;
-    private SeekBar seekCaptureScale;
-    private TextView tvCaptureScaleValue;
+    private RadioGroup rgCaptureMode;
+    private RadioButton rbMediaProjection, rbRoot;
 
     private BroadcastReceiver startCaptureReceiver;
 
@@ -74,8 +73,6 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         settings = new SettingsManager(this);
-
-        // Initialize NCNN
         YoloV8Ncnn.nativeInit();
 
         initViews();
@@ -85,7 +82,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initViews() {
-        // ── Confidence threshold ────────────────────────────────────────
+        // 置信度
         seekConfThresh = findViewById(R.id.seek_conf_thresh);
         tvConfValue = findViewById(R.id.tv_conf_value);
         seekConfThresh.setMax(100);
@@ -98,7 +95,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // ── NMS threshold ───────────────────────────────────────────────
+        // NMS
         seekNmsThresh = findViewById(R.id.seek_nms_thresh);
         tvNmsValue = findViewById(R.id.tv_nms_value);
         seekNmsThresh.setMax(100);
@@ -111,7 +108,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // ── Capture scale ───────────────────────────────────────────────
+        // 捕获缩放
         seekCaptureScale = findViewById(R.id.seek_capture_scale);
         tvCaptureScaleValue = findViewById(R.id.tv_capture_scale_value);
         seekCaptureScale.setMax(100);
@@ -124,44 +121,39 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // ── Target size ─────────────────────────────────────────────────
+        // 输入尺寸
         spinnerTargetSize = findViewById(R.id.spinner_target_size);
         ArrayAdapter<String> sizeAdapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"320", "416", "640"});
         spinnerTargetSize.setAdapter(sizeAdapter);
         spinnerTargetSize.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
                 int[] sizes = {320, 416, 640};
-                settings.setTargetSize(sizes[position]);
+                settings.setTargetSize(sizes[pos]);
             }
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
+            @Override public void onNothingSelected(AdapterView<?> p) {}
         });
 
-        // ── Thread count ────────────────────────────────────────────────
+        // 线程数
         spinnerThreads = findViewById(R.id.spinner_threads);
         ArrayAdapter<String> threadAdapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_dropdown_item,
                 new String[]{"1", "2", "4", "6", "8"});
         spinnerThreads.setAdapter(threadAdapter);
         spinnerThreads.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) {
                 int[] threads = {1, 2, 4, 6, 8};
-                settings.setNumThreads(threads[position]);
+                settings.setNumThreads(threads[pos]);
             }
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
+            @Override public void onNothingSelected(AdapterView<?> p) {}
         });
 
-        // ── GPU toggle ──────────────────────────────────────────────────
+        // GPU
         cbUseGpu = findViewById(R.id.cb_use_gpu);
-        cbUseGpu.setOnCheckedChangeListener((buttonView, isChecked) ->
-                settings.setUseGpu(isChecked));
+        cbUseGpu.setOnCheckedChangeListener((b, checked) -> settings.setUseGpu(checked));
 
-        // ── Model selection ─────────────────────────────────────────────
+        // 模型选择
         btnSelectParam = findViewById(R.id.btn_select_param);
         btnSelectBin = findViewById(R.id.btn_select_bin);
         btnLoadModel = findViewById(R.id.btn_load_model);
@@ -173,11 +165,32 @@ public class MainActivity extends AppCompatActivity {
         btnSelectBin.setOnClickListener(v -> pickFile(REQUEST_PICK_BIN));
         btnLoadModel.setOnClickListener(v -> loadModel());
 
-        // ── Target label & click delay ──────────────────────────────────
+        // 目标标签 & 点击延迟
         etTargetLabel = findViewById(R.id.et_target_label);
         etClickDelay = findViewById(R.id.et_click_delay);
 
-        // ── Permission buttons ──────────────────────────────────────────
+        // 截图模式
+        rgCaptureMode = findViewById(R.id.rg_capture_mode);
+        rbMediaProjection = findViewById(R.id.rb_media_projection);
+        rbRoot = findViewById(R.id.rb_root);
+        tvRootStatus = findViewById(R.id.tv_root_status);
+
+        // 异步检测 Root
+        new Thread(() -> {
+            boolean hasRoot = ScreenCaptureService.checkRootAccess();
+            runOnUiThread(() -> {
+                if (hasRoot) {
+                    tvRootStatus.setText("Root: 可用");
+                    tvRootStatus.setTextColor(0xFF4CAF50);
+                } else {
+                    tvRootStatus.setText("Root: 不可用");
+                    tvRootStatus.setTextColor(0xFFF44336);
+                    rbRoot.setEnabled(false);
+                }
+            });
+        }).start();
+
+        // 权限按钮
         btnGrantOverlay = findViewById(R.id.btn_grant_overlay);
         btnGrantAccessibility = findViewById(R.id.btn_grant_accessibility);
         btnGrantStorage = findViewById(R.id.btn_grant_storage);
@@ -192,14 +205,13 @@ public class MainActivity extends AppCompatActivity {
         btnGrantStorage.setOnClickListener(v -> requestStoragePermission());
         btnGrantNotification.setOnClickListener(v -> requestNotificationPermission());
 
-        // ── Action buttons ──────────────────────────────────────────────
+        // 操作按钮
         btnStartOverlay = findViewById(R.id.btn_start_overlay);
         btnStartCapture = findViewById(R.id.btn_start_capture);
 
         btnStartOverlay.setOnClickListener(v -> startOverlayService());
         btnStartCapture.setOnClickListener(v -> startScreenCapture());
 
-        // ── Save settings button ────────────────────────────────────────
         Button btnSaveSettings = findViewById(R.id.btn_save_settings);
         btnSaveSettings.setOnClickListener(v -> saveExtraSettings());
     }
@@ -214,126 +226,92 @@ public class MainActivity extends AppCompatActivity {
         seekCaptureScale.setProgress((int)(settings.getCaptureScale() * 100));
         tvCaptureScaleValue.setText(String.format("%.0f%%", settings.getCaptureScale() * 100));
 
-        // Target size spinner
         int targetSize = settings.getTargetSize();
-        int sizeIndex = targetSize == 320 ? 0 : targetSize == 416 ? 1 : 2;
-        spinnerTargetSize.setSelection(sizeIndex);
+        spinnerTargetSize.setSelection(targetSize == 320 ? 0 : targetSize == 416 ? 1 : 2);
 
-        // Thread spinner
         int threads = settings.getNumThreads();
-        int threadIndex = threads <= 1 ? 0 : threads <= 2 ? 1 : threads <= 4 ? 2 : threads <= 6 ? 3 : 4;
-        spinnerThreads.setSelection(threadIndex);
+        spinnerThreads.setSelection(threads <= 1 ? 0 : threads <= 2 ? 1 : threads <= 4 ? 2 : threads <= 6 ? 3 : 4);
 
         cbUseGpu.setChecked(settings.getUseGpu());
 
-        // Model paths
         String paramPath = settings.getParamPath();
         String binPath = settings.getBinPath();
-        tvParamPath.setText(paramPath.isEmpty() ? "Not selected" : new File(paramPath).getName());
-        tvBinPath.setText(binPath.isEmpty() ? "Not selected" : new File(binPath).getName());
+        tvParamPath.setText(paramPath.isEmpty() ? "未选择" : new File(paramPath).getName());
+        tvBinPath.setText(binPath.isEmpty() ? "未选择" : new File(binPath).getName());
 
-        // Extra settings
-        int targetLabel = settings.getTargetLabel();
-        etTargetLabel.setText(targetLabel == -1 ? "-1" : String.valueOf(targetLabel));
+        etTargetLabel.setText(settings.getTargetLabel() == -1 ? "-1" : String.valueOf(settings.getTargetLabel()));
         etClickDelay.setText(String.valueOf(settings.getClickDelay()));
 
-        // Model status
-        tvModelStatus.setText(YoloV8Ncnn.nativeIsLoaded() ? "Model: Loaded" : "Model: Not loaded");
+        tvModelStatus.setText(YoloV8Ncnn.nativeIsLoaded() ? "模型: 已加载" : "模型: 未加载");
     }
 
     private void saveExtraSettings() {
         try {
-            String labelStr = etTargetLabel.getText().toString().trim();
-            int label = Integer.parseInt(labelStr);
+            int label = Integer.parseInt(etTargetLabel.getText().toString().trim());
             settings.setTargetLabel(label);
-        } catch (NumberFormatException e) {
-            settings.setTargetLabel(-1);
-        }
+        } catch (NumberFormatException e) { settings.setTargetLabel(-1); }
 
         try {
-            String delayStr = etClickDelay.getText().toString().trim();
-            int delay = Integer.parseInt(delayStr);
+            int delay = Integer.parseInt(etClickDelay.getText().toString().trim());
             settings.setClickDelay(Math.max(100, delay));
-        } catch (NumberFormatException e) {
-            settings.setClickDelay(500);
-        }
+        } catch (NumberFormatException e) { settings.setClickDelay(500); }
 
-        Toast.makeText(this, "Settings saved", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show();
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // Model loading
-    // ═══════════════════════════════════════════════════════════════════════
 
     private void loadModel() {
         String paramPath = settings.getParamPath();
         String binPath = settings.getBinPath();
 
         if (paramPath.isEmpty() || binPath.isEmpty()) {
-            Toast.makeText(this, "Please select both .param and .bin files", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "请先选择 .param 和 .bin 文件", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        tvModelStatus.setText("Model: Loading...");
-
+        tvModelStatus.setText("模型: 加载中...");
         new Thread(() -> {
-            boolean ok = YoloV8Ncnn.nativeLoadModelPath(
-                    paramPath, binPath,
-                    settings.getTargetSize(),
-                    settings.getUseGpu(),
-                    settings.getNumThreads());
-
+            boolean ok = YoloV8Ncnn.nativeLoadModelPath(paramPath, binPath,
+                    settings.getTargetSize(), settings.getUseGpu(), settings.getNumThreads());
             runOnUiThread(() -> {
                 if (ok) {
-                    tvModelStatus.setText("Model: Loaded ✓");
-                    Toast.makeText(this, "Model loaded successfully!", Toast.LENGTH_SHORT).show();
+                    tvModelStatus.setText("模型: 已加载 ✓");
+                    Toast.makeText(this, "模型加载成功!", Toast.LENGTH_SHORT).show();
                 } else {
-                    tvModelStatus.setText("Model: Load failed ✗");
-                    Toast.makeText(this, "Failed to load model. Check file paths.", Toast.LENGTH_LONG).show();
+                    tvModelStatus.setText("模型: 加载失败 ✗");
+                    Toast.makeText(this, "模型加载失败，请检查文件", Toast.LENGTH_LONG).show();
                 }
             });
         }).start();
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // File picker
-    // ═══════════════════════════════════════════════════════════════════════
-
     private void pickFile(int requestCode) {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("*/*");
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        startActivityForResult(Intent.createChooser(intent, "Select file"), requestCode);
+        startActivityForResult(Intent.createChooser(intent, "选择文件"), requestCode);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Permission handling
-    // ═══════════════════════════════════════════════════════════════════════
-
+    // ═══ 权限 ═══════════════════════════════════════════════════════════
     private void requestOverlayPermission() {
         if (!Settings.canDrawOverlays(this)) {
-            Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + getPackageName()));
-            startActivityForResult(intent, REQUEST_OVERLAY);
+            startActivityForResult(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())), REQUEST_OVERLAY);
         }
     }
 
     private void requestAccessibilityPermission() {
-        Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-        startActivityForResult(intent, REQUEST_ACCESSIBILITY);
+        startActivityForResult(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), REQUEST_ACCESSIBILITY);
     }
 
     private void requestStoragePermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:" + getPackageName()));
-                startActivityForResult(intent, REQUEST_MANAGE_STORAGE);
+                startActivityForResult(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + getPackageName())), REQUEST_MANAGE_STORAGE);
             }
         } else {
             ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.READ_EXTERNAL_STORAGE,
-                            Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                    new String[]{Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE},
                     REQUEST_STORAGE);
         }
     }
@@ -341,23 +319,19 @@ public class MainActivity extends AppCompatActivity {
     private void requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
-                    REQUEST_NOTIFICATIONS);
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFICATIONS);
         }
     }
 
     private void updatePermissionStatus() {
-        // Overlay
         boolean hasOverlay = Settings.canDrawOverlays(this);
-        tvOverlayStatus.setText(hasOverlay ? "✓ Granted" : "✗ Required");
+        tvOverlayStatus.setText(hasOverlay ? "✓ 已授权" : "✗ 需授权");
         tvOverlayStatus.setTextColor(hasOverlay ? 0xFF4CAF50 : 0xFFF44336);
 
-        // Accessibility
-        boolean hasAccessibility = AutoClickService.isRunning();
-        tvAccessibilityStatus.setText(hasAccessibility ? "✓ Running" : "✗ Not enabled");
-        tvAccessibilityStatus.setTextColor(hasAccessibility ? 0xFF4CAF50 : 0xFFF44336);
+        boolean hasAcc = AutoClickService.isRunning();
+        tvAccessibilityStatus.setText(hasAcc ? "✓ 运行中" : "✗ 未启用");
+        tvAccessibilityStatus.setTextColor(hasAcc ? 0xFF4CAF50 : 0xFFF44336);
 
-        // Storage
         boolean hasStorage;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             hasStorage = Environment.isExternalStorageManager();
@@ -365,54 +339,72 @@ public class MainActivity extends AppCompatActivity {
             hasStorage = ContextCompat.checkSelfPermission(this,
                     Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
         }
-        tvStorageStatus.setText(hasStorage ? "✓ Granted" : "✗ Required");
+        tvStorageStatus.setText(hasStorage ? "✓ 已授权" : "✗ 需授权");
         tvStorageStatus.setTextColor(hasStorage ? 0xFF4CAF50 : 0xFFF44336);
 
-        // Notification
-        boolean hasNotification = true;
+        boolean hasNotif = true;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            hasNotification = ContextCompat.checkSelfPermission(this,
+            hasNotif = ContextCompat.checkSelfPermission(this,
                     Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
         }
-        tvNotificationStatus.setText(hasNotification ? "✓ Granted" : "✗ Required");
-        tvNotificationStatus.setTextColor(hasNotification ? 0xFF4CAF50 : 0xFFF44336);
+        tvNotificationStatus.setText(hasNotif ? "✓ 已授权" : "✗ 需授权");
+        tvNotificationStatus.setTextColor(hasNotif ? 0xFF4CAF50 : 0xFFF44336);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Start services
-    // ═══════════════════════════════════════════════════════════════════════
-
+    // ═══ 启动服务 ═══════════════════════════════════════════════════════
     private void startOverlayService() {
         if (!Settings.canDrawOverlays(this)) {
-            Toast.makeText(this, "Overlay permission required!", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "请先授权悬浮窗权限!", Toast.LENGTH_SHORT).show();
             requestOverlayPermission();
             return;
         }
-
         Intent intent = new Intent(this, OverlayService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent);
-        } else {
-            startService(intent);
-        }
-        Toast.makeText(this, "Overlay started", Toast.LENGTH_SHORT).show();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
+        else startService(intent);
+        Toast.makeText(this, "悬浮窗已启动", Toast.LENGTH_SHORT).show();
     }
 
     private void startScreenCapture() {
         if (!YoloV8Ncnn.nativeIsLoaded()) {
-            Toast.makeText(this, "Please load a model first!", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "请先加载模型!", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        MediaProjectionManager mpManager =
-                (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        startActivityForResult(mpManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
+        boolean useRoot = rbRoot.isChecked();
+        if (useRoot) {
+            // Root 模式直接启动
+            Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
+            serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, true);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
+            else startService(serviceIntent);
+            setupCallback();
+            Toast.makeText(this, "Root 截图模式已启动!", Toast.LENGTH_SHORT).show();
+        } else {
+            // MediaProjection 模式需要用户授权
+            MediaProjectionManager mpManager =
+                    (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+            startActivityForResult(mpManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
+        }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Activity results
-    // ═══════════════════════════════════════════════════════════════════════
+    private void setupCallback() {
+        new Thread(() -> {
+            try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+            ScreenCaptureService service = ScreenCaptureService.getInstance();
+            if (service != null) {
+                service.setCallback((boxes, inferTimeMs, fps, captureW, captureH) -> {
+                    OverlayService overlay = OverlayService.getInstance();
+                    if (overlay != null) {
+                        overlay.updateDetections(boxes, inferTimeMs, fps, captureW, captureH);
+                    }
+                });
+            }
+            OverlayService overlay = OverlayService.getInstance();
+            if (overlay != null) overlay.setCapturing(true);
+        }).start();
+    }
 
+    // ═══ Activity Results ═══════════════════════════════════════════════
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -423,56 +415,25 @@ public class MainActivity extends AppCompatActivity {
                     Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
                     serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
                     serviceIntent.putExtra(ScreenCaptureService.EXTRA_DATA, data);
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(serviceIntent);
-                    } else {
-                        startService(serviceIntent);
-                    }
-
-                    // Set up detection callback
-                    new Thread(() -> {
-                        // Wait for service to start
-                        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
-                        ScreenCaptureService service = ScreenCaptureService.getInstance();
-                        if (service != null) {
-                            service.setCallback((boxes, inferTimeMs, fps, captureW, captureH) -> {
-                                OverlayService overlay = OverlayService.getInstance();
-                                if (overlay != null) {
-                                    overlay.updateDetections(boxes, inferTimeMs, fps, captureW, captureH);
-                                }
-                            });
-                        }
-                        OverlayService overlay = OverlayService.getInstance();
-                        if (overlay != null) {
-                            overlay.setCapturing(true);
-                        }
-                    }).start();
-
-                    Toast.makeText(this, "Screen capture started!", Toast.LENGTH_SHORT).show();
+                    serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, false);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
+                    else startService(serviceIntent);
+                    setupCallback();
+                    Toast.makeText(this, "屏幕捕获已启动!", Toast.LENGTH_SHORT).show();
                 }
                 break;
-
             case REQUEST_PICK_PARAM:
                 if (resultCode == RESULT_OK && data != null) {
                     String path = copyUriToLocal(data.getData(), "model.param");
-                    if (path != null) {
-                        settings.setParamPath(path);
-                        tvParamPath.setText(new File(path).getName());
-                    }
+                    if (path != null) { settings.setParamPath(path); tvParamPath.setText(new File(path).getName()); }
                 }
                 break;
-
             case REQUEST_PICK_BIN:
                 if (resultCode == RESULT_OK && data != null) {
                     String path = copyUriToLocal(data.getData(), "model.bin");
-                    if (path != null) {
-                        settings.setBinPath(path);
-                        tvBinPath.setText(new File(path).getName());
-                    }
+                    if (path != null) { settings.setBinPath(path); tvBinPath.setText(new File(path).getName()); }
                 }
                 break;
-
             case REQUEST_OVERLAY:
             case REQUEST_ACCESSIBILITY:
             case REQUEST_MANAGE_STORAGE:
@@ -481,10 +442,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /**
-     * Copy a content URI to local app storage for NCNN to read.
-     * NCNN needs a real file path, not a content URI.
-     */
     private String copyUriToLocal(Uri uri, String fileName) {
         try {
             File outFile = new File(getFilesDir(), fileName);
@@ -492,47 +449,32 @@ public class MainActivity extends AppCompatActivity {
             FileOutputStream fos = new FileOutputStream(outFile);
             byte[] buffer = new byte[8192];
             int len;
-            while ((len = is.read(buffer)) != -1) {
-                fos.write(buffer, 0, len);
-            }
-            fos.close();
-            is.close();
-            Log.i(TAG, "Copied to: " + outFile.getAbsolutePath());
+            while ((len = is.read(buffer)) != -1) fos.write(buffer, 0, len);
+            fos.close(); is.close();
             return outFile.getAbsolutePath();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to copy file", e);
-            Toast.makeText(this, "Failed to read file: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "文件读取失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
             return null;
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         updatePermissionStatus();
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        updatePermissionStatus();
-    }
+    @Override protected void onResume() { super.onResume(); updatePermissionStatus(); }
 
     @Override
     protected void onDestroy() {
-        if (startCaptureReceiver != null) {
-            unregisterReceiver(startCaptureReceiver);
-        }
+        if (startCaptureReceiver != null) unregisterReceiver(startCaptureReceiver);
         super.onDestroy();
     }
 
     private void registerReceivers() {
         startCaptureReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                startScreenCapture();
-            }
+            @Override public void onReceive(Context context, Intent intent) { startScreenCapture(); }
         };
         IntentFilter filter = new IntentFilter("com.yolov8ncnn.START_CAPTURE");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -542,11 +484,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // Simple SeekBar listener helper
     abstract static class SimpleSeekBarListener implements SeekBar.OnSeekBarChangeListener {
-        @Override
-        public void onStartTrackingTouch(SeekBar seekBar) {}
-        @Override
-        public void onStopTrackingTouch(SeekBar seekBar) {}
+        @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+        @Override public void onStopTrackingTouch(SeekBar seekBar) {}
     }
 }

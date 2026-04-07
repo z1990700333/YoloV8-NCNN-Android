@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">YOLOv8 NCNN</string>
-    <string name="accessibility_description">YOLOv8 NCNN auto-click service. Performs automatic screen taps when objects are detected.</string>
+    <string name="accessibility_description">YOLOv8 NCNN 自动点击服务。当检测到目标时自动执行屏幕点击。</string>
 </resources>

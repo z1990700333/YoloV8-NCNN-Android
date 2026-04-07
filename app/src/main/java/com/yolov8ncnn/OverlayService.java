@@ -23,14 +23,10 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
-import android.widget.LinearLayout;
 import android.widget.TextView;
 
 /**
- * Floating overlay service that displays:
- * 1. A draggable control panel with FPS, inference time, detection count
- * 2. Detection bounding boxes drawn on screen
- * 3. Click coordinate picker mode
+ * 悬浮窗服务：显示推理信息、检测框、坐标拾取
  */
 public class OverlayService extends Service {
 
@@ -51,17 +47,12 @@ public class OverlayService extends Service {
     private SettingsManager settings;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    // State
     private boolean isCapturing = false;
     private boolean isPickingCoord = false;
     private boolean autoClickEnabled = false;
-
-    // Screen dimensions (for scaling detection boxes)
     private int captureW = 1, captureH = 1;
 
-    public static OverlayService getInstance() {
-        return sInstance;
-    }
+    public static OverlayService getInstance() { return sInstance; }
 
     @Override
     public void onCreate() {
@@ -79,7 +70,6 @@ public class OverlayService extends Service {
 
     @SuppressLint("ClickableViewAccessibility")
     private void createPanelOverlay() {
-        // Inflate panel layout
         panelView = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null);
 
         tvFps = panelView.findViewById(R.id.tv_fps);
@@ -91,36 +81,25 @@ public class OverlayService extends Service {
         btnSetClick = panelView.findViewById(R.id.btn_set_click);
         btnAutoClick = panelView.findViewById(R.id.btn_auto_click);
 
-        // Update click coord display
         int cx = settings.getClickX();
         int cy = settings.getClickY();
-        if (cx >= 0 && cy >= 0) {
-            tvClickCoord.setText(String.format("Click: (%d, %d)", cx, cy));
-        } else {
-            tvClickCoord.setText("Click: Not set");
-        }
+        tvClickCoord.setText(cx >= 0 && cy >= 0 ?
+                String.format("点击坐标: (%d, %d)", cx, cy) : "点击坐标: 未设置");
 
-        // Toggle capture button
         btnToggle.setOnClickListener(v -> {
             if (isCapturing) {
                 stopScreenCapture();
             } else {
-                // Send broadcast to MainActivity to start capture
                 Intent intent = new Intent("com.yolov8ncnn.START_CAPTURE");
                 sendBroadcast(intent);
             }
         });
 
-        // Set click coordinate button
         btnSetClick.setOnClickListener(v -> {
-            if (!isPickingCoord) {
-                startCoordPicker();
-            } else {
-                stopCoordPicker();
-            }
+            if (!isPickingCoord) startCoordPicker();
+            else stopCoordPicker();
         });
 
-        // Auto click toggle
         autoClickEnabled = settings.getAutoClick();
         updateAutoClickButton();
         btnAutoClick.setOnClickListener(v -> {
@@ -129,7 +108,6 @@ public class OverlayService extends Service {
             updateAutoClickButton();
         });
 
-        // Window params for panel
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -140,7 +118,6 @@ public class OverlayService extends Service {
         params.x = 0;
         params.y = 100;
 
-        // Make panel draggable
         panelView.setOnTouchListener(new View.OnTouchListener() {
             private int initialX, initialY;
             private float initialTouchX, initialTouchY;
@@ -150,18 +127,14 @@ public class OverlayService extends Service {
             public boolean onTouch(View v, MotionEvent event) {
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
-                        initialX = params.x;
-                        initialY = params.y;
-                        initialTouchX = event.getRawX();
-                        initialTouchY = event.getRawY();
+                        initialX = params.x; initialY = params.y;
+                        initialTouchX = event.getRawX(); initialTouchY = event.getRawY();
                         isDragging = false;
                         return true;
                     case MotionEvent.ACTION_MOVE:
                         float dx = event.getRawX() - initialTouchX;
                         float dy = event.getRawY() - initialTouchY;
-                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-                            isDragging = true;
-                        }
+                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) isDragging = true;
                         if (isDragging) {
                             params.x = initialX + (int) dx;
                             params.y = initialY + (int) dy;
@@ -180,7 +153,6 @@ public class OverlayService extends Service {
 
     private void createDetectionOverlay() {
         detectionOverlayView = new DetectionOverlayView(this);
-
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -191,18 +163,16 @@ public class OverlayService extends Service {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
-
         windowManager.addView(detectionOverlayView, params);
     }
 
     @SuppressLint("ClickableViewAccessibility")
     private void startCoordPicker() {
         isPickingCoord = true;
-        btnSetClick.setText("Cancel");
-        tvStatus.setText("Tap screen to set click position...");
+        btnSetClick.setText("取消");
+        tvStatus.setText("点击屏幕设置点击坐标...");
         tvStatus.setVisibility(View.VISIBLE);
 
-        // Create a full-screen transparent touch capture overlay
         touchCaptureView = new View(this);
         touchCaptureView.setBackgroundColor(Color.argb(40, 255, 255, 0));
 
@@ -221,8 +191,7 @@ public class OverlayService extends Service {
                 int y = (int) event.getRawY();
                 settings.setClickX(x);
                 settings.setClickY(y);
-                tvClickCoord.setText(String.format("Click: (%d, %d)", x, y));
-                Log.i(TAG, String.format("Click coordinate set: (%d, %d)", x, y));
+                tvClickCoord.setText(String.format("点击坐标: (%d, %d)", x, y));
                 stopCoordPicker();
                 return true;
             }
@@ -234,9 +203,8 @@ public class OverlayService extends Service {
 
     private void stopCoordPicker() {
         isPickingCoord = false;
-        btnSetClick.setText("Set Click Pos");
+        btnSetClick.setText("设置坐标");
         tvStatus.setVisibility(View.GONE);
-
         if (touchCaptureView != null) {
             windowManager.removeView(touchCaptureView);
             touchCaptureView = null;
@@ -245,27 +213,22 @@ public class OverlayService extends Service {
 
     private void updateAutoClickButton() {
         if (autoClickEnabled) {
-            btnAutoClick.setText("AutoClick: ON");
+            btnAutoClick.setText("自动点击: 开");
             btnAutoClick.setBackgroundColor(Color.parseColor("#4CAF50"));
         } else {
-            btnAutoClick.setText("AutoClick: OFF");
+            btnAutoClick.setText("自动点击: 关");
             btnAutoClick.setBackgroundColor(Color.parseColor("#757575"));
         }
     }
 
-    /**
-     * Update overlay with detection results. Called from ScreenCaptureService.
-     */
     public void updateDetections(BoxInfo[] boxes, float inferTimeMs, float fps,
                                   int captureW, int captureH) {
         this.captureW = captureW;
         this.captureH = captureH;
-
         mainHandler.post(() -> {
-            tvFps.setText(String.format("FPS: %.1f", fps));
-            tvInferTime.setText(String.format("Infer: %.1fms", inferTimeMs));
-            tvDetections.setText(String.format("Detect: %d", boxes != null ? boxes.length : 0));
-
+            tvFps.setText(String.format("帧率: %.1f", fps));
+            tvInferTime.setText(String.format("推理: %.1fms", inferTimeMs));
+            tvDetections.setText(String.format("检测: %d", boxes != null ? boxes.length : 0));
             if (detectionOverlayView != null && boxes != null) {
                 detectionOverlayView.setDetections(boxes, captureW, captureH);
             }
@@ -275,20 +238,18 @@ public class OverlayService extends Service {
     public void setCapturing(boolean capturing) {
         this.isCapturing = capturing;
         mainHandler.post(() -> {
-            btnToggle.setText(capturing ? "Stop" : "Start");
+            btnToggle.setText(capturing ? "停止" : "开始");
             if (!capturing) {
-                tvFps.setText("FPS: --");
-                tvInferTime.setText("Infer: --");
-                tvDetections.setText("Detect: --");
+                tvFps.setText("帧率: --");
+                tvInferTime.setText("推理: --");
+                tvDetections.setText("检测: --");
             }
         });
     }
 
     private void stopScreenCapture() {
         ScreenCaptureService service = ScreenCaptureService.getInstance();
-        if (service != null) {
-            service.stopCapture();
-        }
+        if (service != null) service.stopCapture();
         setCapturing(false);
     }
 
@@ -301,15 +262,12 @@ public class OverlayService extends Service {
         super.onDestroy();
     }
 
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null;
-    }
+    @Override public IBinder onBind(Intent intent) { return null; }
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID, "Overlay", NotificationManager.IMPORTANCE_LOW);
+                    CHANNEL_ID, "悬浮窗", NotificationManager.IMPORTANCE_LOW);
             getSystemService(NotificationManager.class).createNotificationChannel(channel);
         }
     }
@@ -322,17 +280,14 @@ public class OverlayService extends Service {
             builder = new Notification.Builder(this);
         }
         return builder
-                .setContentTitle("YOLOv8 Overlay")
-                .setContentText("Detection overlay active")
+                .setContentTitle("YOLOv8 悬浮窗")
+                .setContentText("检测悬浮窗运行中")
                 .setSmallIcon(android.R.drawable.ic_menu_view)
                 .setOngoing(true)
                 .build();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Detection overlay custom View
-    // ═══════════════════════════════════════════════════════════════════════
-
     static class DetectionOverlayView extends View {
         private BoxInfo[] boxes = new BoxInfo[0];
         private int srcW = 1, srcH = 1;
@@ -346,58 +301,38 @@ public class OverlayService extends Service {
         public DetectionOverlayView(Context context) {
             super(context);
             setWillNotDraw(false);
-
-            boxPaint.setColor(Color.RED);
-            boxPaint.setStyle(Paint.Style.STROKE);
-            boxPaint.setStrokeWidth(3f);
-            boxPaint.setAntiAlias(true);
-
-            textPaint.setColor(Color.WHITE);
-            textPaint.setTextSize(28f);
-            textPaint.setAntiAlias(true);
-
-            bgPaint.setColor(Color.argb(180, 255, 0, 0));
-            bgPaint.setStyle(Paint.Style.FILL);
-
-            clickPaint.setColor(Color.argb(200, 0, 255, 0));
-            clickPaint.setStyle(Paint.Style.STROKE);
-            clickPaint.setStrokeWidth(4f);
-            clickPaint.setAntiAlias(true);
+            boxPaint.setColor(Color.RED); boxPaint.setStyle(Paint.Style.STROKE);
+            boxPaint.setStrokeWidth(3f); boxPaint.setAntiAlias(true);
+            textPaint.setColor(Color.WHITE); textPaint.setTextSize(28f); textPaint.setAntiAlias(true);
+            bgPaint.setColor(Color.argb(180, 255, 0, 0)); bgPaint.setStyle(Paint.Style.FILL);
+            clickPaint.setColor(Color.argb(200, 0, 255, 0)); clickPaint.setStyle(Paint.Style.STROKE);
+            clickPaint.setStrokeWidth(4f); clickPaint.setAntiAlias(true);
         }
 
         public void setDetections(BoxInfo[] newBoxes, int w, int h) {
-            this.boxes = newBoxes;
-            this.srcW = w;
-            this.srcH = h;
+            this.boxes = newBoxes; this.srcW = w; this.srcH = h;
             postInvalidate();
         }
 
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-
             float scaleX = (float) getWidth() / srcW;
             float scaleY = (float) getHeight() / srcH;
 
             for (BoxInfo box : boxes) {
-                float l = box.x1 * scaleX;
-                float t = box.y1 * scaleY;
-                float r = box.x2 * scaleX;
-                float b = box.y2 * scaleY;
-
+                float l = box.x1 * scaleX, t = box.y1 * scaleY;
+                float r = box.x2 * scaleX, b = box.y2 * scaleY;
                 rect.set(l, t, r, b);
                 canvas.drawRect(rect, boxPaint);
-
                 String label = String.format("L%d %.0f%%", box.label, box.score * 100);
                 float textW = textPaint.measureText(label);
                 canvas.drawRect(l, t - 32f, l + textW + 8f, t, bgPaint);
                 canvas.drawText(label, l + 4f, t - 6f, textPaint);
             }
 
-            // Draw click target indicator
             SettingsManager sm = new SettingsManager(getContext());
-            int cx = sm.getClickX();
-            int cy = sm.getClickY();
+            int cx = sm.getClickX(); int cy = sm.getClickY();
             if (cx >= 0 && cy >= 0) {
                 canvas.drawCircle(cx, cy, 20f, clickPaint);
                 canvas.drawLine(cx - 30, cy, cx + 30, cy, clickPaint);
