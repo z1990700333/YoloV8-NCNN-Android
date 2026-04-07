@@ -134,6 +134,12 @@ public class ScreenCaptureService extends Service {
         return START_STICKY;
     }
 
+    private void overlayLog(String msg) {
+        Log.i(TAG, msg);
+        OverlayService ov = OverlayService.getInstance();
+        if (ov != null) ov.appendLog(msg);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // Root screencap 模式 (持久化 su shell，避免每帧 fork 新进程)
     // ═══════════════════════════════════════════════════════════════════════
@@ -146,7 +152,7 @@ public class ScreenCaptureService extends Service {
         isRunning.set(true);
         fpsStartTime = System.currentTimeMillis();
         frameCount = 0;
-        Log.i(TAG, "Root 截图模式启动 (持久化 su shell)");
+        overlayLog("Root截图启动");
 
         inferHandler.post(this::rootCaptureLoop);
     }
@@ -155,8 +161,12 @@ public class ScreenCaptureService extends Service {
         if (!isRunning.get()) return;
 
         try {
+            long t0 = System.currentTimeMillis();
             Bitmap bmp = captureScreenByRoot();
+            long captureMs = System.currentTimeMillis() - t0;
+
             if (bmp != null) {
+                overlayLog("截图:" + bmp.getWidth() + "x" + bmp.getHeight() + " " + captureMs + "ms");
                 if (YoloV8Ncnn.nativeIsLoaded()) {
                     float confThresh = settings.getConfThresh();
                     float nmsThresh = settings.getNmsThresh();
@@ -168,6 +178,7 @@ public class ScreenCaptureService extends Service {
                         float inferTimeMs = YoloV8Ncnn.getInferTime(rawResult);
                         BoxInfo[] boxes = YoloV8Ncnn.parseResult(rawResult);
 
+                        overlayLog("推理:" + String.format("%.0f", inferTimeMs) + "ms 检测:" + boxes.length);
                         updateFps();
                         handleAutoClick(boxes);
 
@@ -175,16 +186,21 @@ public class ScreenCaptureService extends Service {
                         if (cb != null) {
                             cb.onDetectionResult(boxes, inferTimeMs, currentFps, captureWidth, captureHeight);
                         }
+                    } else {
+                        overlayLog("推理返回null");
                     }
                 } else {
                     bmp.recycle();
+                    overlayLog("模型未加载!");
                 }
+            } else {
+                overlayLog("截图失败(null) " + captureMs + "ms");
             }
         } catch (Exception e) {
+            overlayLog("异常:" + e.getMessage());
             Log.e(TAG, "Root 截图推理出错", e);
         }
 
-        // 继续下一帧
         if (isRunning.get()) {
             inferHandler.post(this::rootCaptureLoop);
         }
@@ -344,36 +360,47 @@ public class ScreenCaptureService extends Service {
     private void startMediaProjectionCapture(int resultCode, Intent data) {
         MediaProjectionManager mpManager =
                 (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        mediaProjection = mpManager.getMediaProjection(resultCode, data);
 
-        if (mediaProjection == null) {
-            Log.e(TAG, "MediaProjection 为 null");
+        overlayLog("获取MediaProjection code=" + resultCode);
+
+        try {
+            mediaProjection = mpManager.getMediaProjection(resultCode, data);
+        } catch (Exception e) {
+            overlayLog("getMediaProjection异常:" + e.getMessage());
+            Log.e(TAG, "getMediaProjection failed", e);
             stopSelf();
             return;
         }
 
+        if (mediaProjection == null) {
+            overlayLog("MediaProjection为null!");
+            stopSelf();
+            return;
+        }
+
+        overlayLog("MediaProjection获取成功");
+
         mediaProjection.registerCallback(new MediaProjection.Callback() {
             @Override
             public void onStop() {
-                Log.i(TAG, "MediaProjection 已停止");
+                overlayLog("MediaProjection已停止");
                 stopCapture();
             }
         }, inferHandler);
 
-        imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2);
+        imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 3);
+        overlayLog("ImageReader创建 " + captureWidth + "x" + captureHeight);
 
         imageReader.setOnImageAvailableListener(reader -> {
             Image image = reader.acquireLatestImage();
             if (image == null) return;
 
-            // 跳帧：如果上一帧还在推理
             if (!inferBusy.compareAndSet(false, true)) {
                 image.close();
                 return;
             }
 
             try {
-                // 在关闭 Image 之前同步复制像素数据
                 final Image.Plane plane = image.getPlanes()[0];
                 final ByteBuffer srcBuffer = plane.getBuffer();
                 final int rowStride = plane.getRowStride();
@@ -381,14 +408,12 @@ public class ScreenCaptureService extends Service {
                 final int w = captureWidth;
                 final int h = captureHeight;
 
-                // 复制到 Bitmap
                 final Bitmap bmp = Bitmap.createBitmap(
                         w + (rowStride - pixelStride * w) / pixelStride, h,
                         Bitmap.Config.ARGB_8888);
                 bmp.copyPixelsFromBuffer(srcBuffer);
                 image.close();
 
-                // 裁剪掉 rowStride 多余的像素
                 final Bitmap cropped;
                 if (bmp.getWidth() != w) {
                     cropped = Bitmap.createBitmap(bmp, 0, 0, w, h);
@@ -397,10 +422,10 @@ public class ScreenCaptureService extends Service {
                     cropped = bmp;
                 }
 
-                // 直接在当前线程推理（imageReader callback 已在 inferHandler 线程）
                 try {
                     if (!YoloV8Ncnn.nativeIsLoaded()) {
                         cropped.recycle();
+                        overlayLog("模型未加载!");
                         return;
                     }
 
@@ -421,13 +446,15 @@ public class ScreenCaptureService extends Service {
                         if (cb != null) {
                             cb.onDetectionResult(boxes, inferTimeMs, currentFps, w, h);
                         }
+                    } else {
+                        overlayLog("推理返回null");
                     }
                 } catch (Exception e) {
-                    Log.e(TAG, "推理出错", e);
+                    overlayLog("推理异常:" + e.getMessage());
                     if (!cropped.isRecycled()) cropped.recycle();
                 }
             } catch (Exception e) {
-                Log.e(TAG, "图像处理出错", e);
+                overlayLog("图像处理异常:" + e.getMessage());
                 try { image.close(); } catch (Exception ignored) {}
             } finally {
                 inferBusy.set(false);
@@ -438,12 +465,14 @@ public class ScreenCaptureService extends Service {
                 "YoloV8Capture",
                 captureWidth, captureHeight, screenDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.getSurface(), null, null);
+                imageReader.getSurface(), null, inferHandler);
+
+        overlayLog("VirtualDisplay创建完成");
 
         isRunning.set(true);
         fpsStartTime = System.currentTimeMillis();
         frameCount = 0;
-        Log.i(TAG, "MediaProjection 屏幕捕获已启动");
+        overlayLog("MediaProjection启动 " + captureWidth + "x" + captureHeight);
     }
 
     // ═══════════════════════════════════════════════════════════════════════

@@ -268,16 +268,23 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        int targetSize = settings.getTargetSize();
+        boolean useGpu = settings.getUseGpu();
+        int numThreads = settings.getNumThreads();
+
         tvModelStatus.setText("模型: 加载中...");
+        Log.i(TAG, String.format("加载模型: size=%d gpu=%b threads=%d param=%s",
+                targetSize, useGpu, numThreads, paramPath));
+
         new Thread(() -> {
             boolean ok = YoloV8Ncnn.nativeLoadModelPath(paramPath, binPath,
-                    settings.getTargetSize(), settings.getUseGpu(), settings.getNumThreads());
+                    targetSize, useGpu, numThreads);
             runOnUiThread(() -> {
                 if (ok) {
-                    tvModelStatus.setText("模型: 已加载 ✓");
+                    tvModelStatus.setText(String.format("模型: 已加载 (size=%d, thr=%d)", targetSize, numThreads));
                     Toast.makeText(this, "模型加载成功!", Toast.LENGTH_SHORT).show();
                 } else {
-                    tvModelStatus.setText("模型: 加载失败 ✗");
+                    tvModelStatus.setText("模型: 加载失败");
                     Toast.makeText(this, "模型加载失败，请检查文件", Toast.LENGTH_LONG).show();
                 }
             });
@@ -370,9 +377,16 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        // 确保悬浮窗已启动
+        if (OverlayService.getInstance() == null) {
+            startOverlayService();
+            try { Thread.sleep(300); } catch (InterruptedException ignored) {}
+        }
+
         boolean useRoot = rbRoot.isChecked();
+        Log.i(TAG, "开始截图 useRoot=" + useRoot + " modelLoaded=" + YoloV8Ncnn.nativeIsLoaded());
+
         if (useRoot) {
-            // Root 模式直接启动
             Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
             serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, true);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
@@ -380,7 +394,6 @@ public class MainActivity extends AppCompatActivity {
             setupCallback();
             Toast.makeText(this, "Root 截图模式已启动!", Toast.LENGTH_SHORT).show();
         } else {
-            // MediaProjection 模式需要用户授权
             MediaProjectionManager mpManager =
                     (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             startActivityForResult(mpManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);

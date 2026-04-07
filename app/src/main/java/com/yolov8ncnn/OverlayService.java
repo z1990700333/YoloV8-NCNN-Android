@@ -25,9 +25,9 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.TextView;
 
-/**
- * 悬浮窗服务：显示推理信息、检测框、坐标拾取
- */
+import java.util.ArrayList;
+import java.util.List;
+
 public class OverlayService extends Service {
 
     private static final String TAG = "OverlayService";
@@ -41,7 +41,7 @@ public class OverlayService extends Service {
     private View touchCaptureView;
     private DetectionOverlayView detectionOverlayView;
 
-    private TextView tvFps, tvInferTime, tvDetections, tvClickCoord, tvStatus;
+    private TextView tvFps, tvInferTime, tvDetections, tvClickCoord, tvStatus, tvLog;
     private Button btnToggle, btnSetClick, btnAutoClick;
 
     private SettingsManager settings;
@@ -51,6 +51,10 @@ public class OverlayService extends Service {
     private boolean isPickingCoord = false;
     private boolean autoClickEnabled = false;
     private int captureW = 1, captureH = 1;
+
+    // Log buffer
+    private final List<String> logLines = new ArrayList<>();
+    private static final int MAX_LOG_LINES = 6;
 
     public static OverlayService getInstance() { return sInstance; }
 
@@ -68,6 +72,16 @@ public class OverlayService extends Service {
         createDetectionOverlay();
     }
 
+    public void appendLog(String msg) {
+        mainHandler.post(() -> {
+            logLines.add(msg);
+            while (logLines.size() > MAX_LOG_LINES) logLines.remove(0);
+            StringBuilder sb = new StringBuilder();
+            for (String l : logLines) sb.append(l).append("\n");
+            if (tvLog != null) tvLog.setText(sb.toString().trim());
+        });
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private void createPanelOverlay() {
         panelView = LayoutInflater.from(this).inflate(R.layout.overlay_panel, null);
@@ -77,6 +91,7 @@ public class OverlayService extends Service {
         tvDetections = panelView.findViewById(R.id.tv_detections);
         tvClickCoord = panelView.findViewById(R.id.tv_click_coord);
         tvStatus = panelView.findViewById(R.id.tv_status);
+        tvLog = panelView.findViewById(R.id.tv_log);
         btnToggle = panelView.findViewById(R.id.btn_toggle);
         btnSetClick = panelView.findViewById(R.id.btn_set_click);
         btnAutoClick = panelView.findViewById(R.id.btn_auto_click);
