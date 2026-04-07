@@ -6,7 +6,6 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
-import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -28,7 +27,6 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ScreenCaptureService extends Service {
@@ -64,10 +62,13 @@ public class ScreenCaptureService extends Service {
     private long fpsStartTime = 0;
     private float currentFps = 0;
 
-    // Root: persistent su shell for raw screencap
+    // Root: persistent su shell
     private Process suProcess;
-    private OutputStream suStdin;
-    private InputStream suStdout;
+    private OutputStream suOut;
+    private InputStream suIn;
+    // 复用 buffer 避免 GC
+    private byte[] rootPixelBuf;
+    private ByteBuffer rootDirectBuf;
 
     public interface DetectionCallback {
         void onDetectionResult(BoxInfo[] boxes, float inferTimeMs, float fps,
@@ -125,7 +126,7 @@ public class ScreenCaptureService extends Service {
             int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1);
             Intent data = intent.getParcelableExtra(EXTRA_DATA);
             if (resultCode == -1 || data == null) {
-                log("MediaProjection数据无效 code=" + resultCode);
+                log("MediaProjection数据无效");
                 stopSelf();
                 return START_NOT_STICKY;
             }
@@ -135,15 +136,53 @@ public class ScreenCaptureService extends Service {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Root screencap: raw RGBA → 直接喂 C++ (零拷贝)
-    // screencap 不加 -p 输出 raw 格式: 4字节width + 4字节height + 4字节format + RGBA数据
+    // Root: 持久 su shell + screencap raw, 复用 buffer
     // ═══════════════════════════════════════════════════════════════════════
+
+    private boolean initSuShell() {
+        try {
+            destroySu();
+            suProcess = Runtime.getRuntime().exec("su");
+            suOut = suProcess.getOutputStream();
+            suIn = suProcess.getInputStream();
+            // 测试 shell 是否可用
+            suOut.write("echo READY\n".getBytes());
+            suOut.flush();
+            byte[] tmp = new byte[64];
+            long t = System.currentTimeMillis();
+            StringBuilder sb = new StringBuilder();
+            while (System.currentTimeMillis() - t < 3000) {
+                if (suIn.available() > 0) {
+                    int n = suIn.read(tmp);
+                    if (n > 0) sb.append(new String(tmp, 0, n));
+                    if (sb.toString().contains("READY")) {
+                        log("su shell就绪");
+                        return true;
+                    }
+                } else {
+                    Thread.sleep(5);
+                }
+            }
+            log("su shell超时");
+            return false;
+        } catch (Exception e) {
+            log("su shell失败:" + e.getMessage());
+            return false;
+        }
+    }
 
     private void startRootCapture() {
         isRunning.set(true);
         fpsStartTime = System.currentTimeMillis();
         frameCount = 0;
-        log("Root截图启动(raw模式)");
+
+        if (!initSuShell()) {
+            log("无法创建su shell,停止");
+            stopSelf();
+            return;
+        }
+
+        log("Root截图启动(持久shell)");
         inferHandler.post(this::rootCaptureLoop);
     }
 
@@ -153,68 +192,68 @@ public class ScreenCaptureService extends Service {
         try {
             long t0 = System.currentTimeMillis();
 
-            // 每帧执行 screencap (不加-p = raw RGBA输出)
-            // 用单独进程，因为 screencap 输出完就退出，比持久shell更可靠
-            Process proc = Runtime.getRuntime().exec(new String[]{"su", "-c", "screencap"});
-            DataInputStream dis = new DataInputStream(proc.getInputStream());
+            // 通过持久 su shell 执行 screencap (raw格式)
+            // screencap 输出: 4字节w + 4字节h + 4字节fmt + RGBA像素
+            suOut.write("screencap\n".getBytes());
+            suOut.flush();
 
-            // 读取 header: width(4) + height(4) + format(4) = 12 bytes
+            DataInputStream dis = new DataInputStream(suIn);
+
             int w = Integer.reverseBytes(dis.readInt());
             int h = Integer.reverseBytes(dis.readInt());
             int fmt = Integer.reverseBytes(dis.readInt());
 
             int dataSize = w * h * 4;
-            byte[] rawPixels = new byte[dataSize];
 
-            // 读取全部像素数据
+            // 复用 buffer
+            if (rootPixelBuf == null || rootPixelBuf.length != dataSize) {
+                rootPixelBuf = new byte[dataSize];
+                rootDirectBuf = ByteBuffer.allocateDirect(dataSize);
+                log("分配buffer:" + w + "x" + h + " " + (dataSize/1024) + "KB");
+            }
+
             int offset = 0;
             while (offset < dataSize) {
-                int read = dis.read(rawPixels, offset, dataSize - offset);
-                if (read <= 0) break;
-                offset += read;
+                int n = dis.read(rootPixelBuf, offset, Math.min(65536, dataSize - offset));
+                if (n <= 0) break;
+                offset += n;
             }
-            proc.destroy();
 
             long captureMs = System.currentTimeMillis() - t0;
 
             if (offset < dataSize) {
-                log("截图不完整:" + offset + "/" + dataSize);
-            } else {
-                // 直接用 ByteBuffer 传给 C++, 零拷贝
-                ByteBuffer directBuf = ByteBuffer.allocateDirect(dataSize);
-                directBuf.put(rawPixels);
-                directBuf.rewind();
+                log("数据不完整:" + offset + "/" + dataSize + " 重建shell");
+                initSuShell();
+            } else if (YoloV8Ncnn.nativeIsLoaded()) {
+                rootDirectBuf.rewind();
+                rootDirectBuf.put(rootPixelBuf);
+                rootDirectBuf.rewind();
 
-                if (YoloV8Ncnn.nativeIsLoaded()) {
-                    float confTh = settings.getConfThresh();
-                    float nmsTh = settings.getNmsThresh();
+                float[] rawResult = YoloV8Ncnn.nativeDetectBuffer(
+                        rootDirectBuf, w, h, w * 4,
+                        settings.getConfThresh(), settings.getNmsThresh());
 
-                    float[] rawResult = YoloV8Ncnn.nativeDetectBuffer(
-                            directBuf, w, h, w * 4, confTh, nmsTh);
+                if (rawResult != null) {
+                    float inferMs = YoloV8Ncnn.getInferTime(rawResult);
+                    BoxInfo[] boxes = YoloV8Ncnn.parseResult(rawResult);
+                    updateFps();
+                    handleAutoClick(boxes);
 
-                    if (rawResult != null) {
-                        float inferMs = YoloV8Ncnn.getInferTime(rawResult);
-                        BoxInfo[] boxes = YoloV8Ncnn.parseResult(rawResult);
+                    log("cap:" + captureMs + " inf:" + String.format("%.0f", inferMs)
+                            + " det:" + boxes.length + " fps:" + String.format("%.1f", currentFps));
 
-                        updateFps();
-                        handleAutoClick(boxes);
-
-                        log("cap:" + captureMs + "ms inf:" + String.format("%.0f", inferMs)
-                                + "ms det:" + boxes.length + " " + w + "x" + h);
-
-                        DetectionCallback cb = callback;
-                        if (cb != null) {
-                            cb.onDetectionResult(boxes, inferMs, currentFps, w, h);
-                        }
-                    } else {
-                        log("推理null cap:" + captureMs + "ms");
-                    }
+                    DetectionCallback cb = callback;
+                    if (cb != null) cb.onDetectionResult(boxes, inferMs, currentFps, w, h);
                 } else {
-                    log("模型未加载!");
+                    log("推理null cap:" + captureMs + "ms");
                 }
+            } else {
+                log("模型未加载!");
             }
         } catch (Exception e) {
             log("Root异常:" + e.getMessage());
+            // 重建 shell
+            try { initSuShell(); } catch (Exception ignored) {}
         }
 
         if (isRunning.get()) {
@@ -226,104 +265,81 @@ public class ScreenCaptureService extends Service {
         try {
             Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "id"});
             BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
-            String line = r.readLine();
-            p.waitFor();
+            String line = r.readLine(); p.waitFor();
             return line != null && line.contains("uid=0");
         } catch (Exception e) { return false; }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // MediaProjection: Image ByteBuffer → 直接传 C++ (零拷贝)
+    // MediaProjection: Image ByteBuffer → C++ 零拷贝
     // ═══════════════════════════════════════════════════════════════════════
 
     @SuppressLint("WrongConstant")
     private void startMediaProjectionCapture(int resultCode, Intent data) {
-        log("MediaProjection启动 code=" + resultCode);
+        log("MediaProjection启动");
 
         MediaProjectionManager mpManager =
                 (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-
         try {
             mediaProjection = mpManager.getMediaProjection(resultCode, data);
         } catch (Exception e) {
             log("getMediaProjection异常:" + e.getMessage());
-            stopSelf();
-            return;
+            stopSelf(); return;
         }
-
         if (mediaProjection == null) {
             log("MediaProjection=null!");
-            stopSelf();
-            return;
+            stopSelf(); return;
         }
 
-        log("MediaProjection获取成功");
-
         mediaProjection.registerCallback(new MediaProjection.Callback() {
-            @Override
-            public void onStop() {
-                log("MediaProjection停止");
-                stopCapture();
-            }
+            @Override public void onStop() { log("MP停止"); stopCapture(); }
         }, inferHandler);
 
         imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 3);
-        log("ImageReader: " + captureWidth + "x" + captureHeight);
 
         imageReader.setOnImageAvailableListener(reader -> {
             Image image = reader.acquireLatestImage();
             if (image == null) return;
 
             if (!inferBusy.compareAndSet(false, true)) {
-                image.close();
-                return;
+                image.close(); return;
             }
 
             try {
                 if (!YoloV8Ncnn.nativeIsLoaded()) {
-                    image.close();
-                    inferBusy.set(false);
-                    log("模型未加载!");
+                    image.close(); inferBusy.set(false);
                     return;
                 }
 
                 Image.Plane plane = image.getPlanes()[0];
                 ByteBuffer buffer = plane.getBuffer();
                 int rowStride = plane.getRowStride();
-                int w = captureWidth;
-                int h = captureHeight;
 
-                float confTh = settings.getConfThresh();
-                float nmsTh = settings.getNmsThresh();
-
-                // 零拷贝: 直接把 Image 的 ByteBuffer 传给 C++
                 float[] rawResult = YoloV8Ncnn.nativeDetectBuffer(
-                        buffer, w, h, rowStride, confTh, nmsTh);
+                        buffer, captureWidth, captureHeight, rowStride,
+                        settings.getConfThresh(), settings.getNmsThresh());
 
-                image.close(); // 推理完再关闭
+                image.close();
 
                 if (rawResult != null) {
                     float inferMs = YoloV8Ncnn.getInferTime(rawResult);
                     BoxInfo[] boxes = YoloV8Ncnn.parseResult(rawResult);
-
                     updateFps();
                     handleAutoClick(boxes);
 
                     DetectionCallback cb = callback;
-                    if (cb != null) {
-                        cb.onDetectionResult(boxes, inferMs, currentFps, w, h);
-                    }
+                    if (cb != null) cb.onDetectionResult(boxes, inferMs, currentFps,
+                            captureWidth, captureHeight);
                 }
             } catch (Exception e) {
-                log("MP推理异常:" + e.getMessage());
+                log("MP异常:" + e.getMessage());
                 try { image.close(); } catch (Exception ignored) {}
             } finally {
                 inferBusy.set(false);
             }
         }, inferHandler);
 
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-                "YoloV8Capture",
+        virtualDisplay = mediaProjection.createVirtualDisplay("YoloV8Capture",
                 captureWidth, captureHeight, screenDpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.getSurface(), null, inferHandler);
@@ -331,7 +347,7 @@ public class ScreenCaptureService extends Service {
         isRunning.set(true);
         fpsStartTime = System.currentTimeMillis();
         frameCount = 0;
-        log("VirtualDisplay+ImageReader就绪");
+        log("MP就绪 " + captureWidth + "x" + captureHeight);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -343,21 +359,19 @@ public class ScreenCaptureService extends Service {
         long elapsed = now - fpsStartTime;
         if (elapsed >= 1000) {
             currentFps = frameCount * 1000.0f / elapsed;
-            frameCount = 0;
-            fpsStartTime = now;
+            frameCount = 0; fpsStartTime = now;
         }
     }
 
     private void handleAutoClick(BoxInfo[] boxes) {
         if (!settings.getAutoClick() || boxes == null || boxes.length == 0) return;
         if (!AutoClickService.isRunning()) return;
-        int targetLabel = settings.getTargetLabel();
-        int clickX = settings.getClickX(), clickY = settings.getClickY();
-        if (clickX < 0 || clickY < 0) return;
-        for (BoxInfo box : boxes) {
-            if (targetLabel == -1 || box.label == targetLabel) {
-                AutoClickService svc = AutoClickService.getInstance();
-                if (svc != null) svc.tap(clickX, clickY, settings.getClickDelay());
+        int tl = settings.getTargetLabel(), cx = settings.getClickX(), cy = settings.getClickY();
+        if (cx < 0 || cy < 0) return;
+        for (BoxInfo b : boxes) {
+            if (tl == -1 || b.label == tl) {
+                AutoClickService s = AutoClickService.getInstance();
+                if (s != null) s.tap(cx, cy, settings.getClickDelay());
                 break;
             }
         }
@@ -369,14 +383,14 @@ public class ScreenCaptureService extends Service {
         if (mediaProjection != null) { mediaProjection.stop(); mediaProjection = null; }
         if (imageReader != null) { imageReader.close(); imageReader = null; }
         destroySu();
-        log("捕获已停止");
+        log("已停止");
         stopSelf();
     }
 
     private void destroySu() {
-        try { if (suStdin != null) { suStdin.write("exit\n".getBytes()); suStdin.flush(); suStdin.close(); } } catch (Exception ignored) {}
+        try { if (suOut != null) { suOut.write("exit\n".getBytes()); suOut.flush(); suOut.close(); } } catch (Exception ignored) {}
         try { if (suProcess != null) suProcess.destroy(); } catch (Exception ignored) {}
-        suProcess = null; suStdin = null; suStdout = null;
+        suProcess = null; suOut = null; suIn = null;
     }
 
     @Override
@@ -392,16 +406,14 @@ public class ScreenCaptureService extends Service {
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "屏幕捕获", NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("YOLOv8 屏幕推理服务");
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
     }
 
     private Notification buildNotification() {
         Notification.Builder b = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-        return b.setContentTitle("YOLOv8 NCNN").setContentText("屏幕推理运行中...")
+                ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
+        return b.setContentTitle("YOLOv8 NCNN").setContentText("推理中...")
                 .setSmallIcon(android.R.drawable.ic_menu_camera).setOngoing(true).build();
     }
 }

@@ -105,8 +105,8 @@ public class OverlayService extends Service {
             if (isCapturing) {
                 stopScreenCapture();
             } else {
-                Intent intent = new Intent("com.yolov8ncnn.START_CAPTURE");
-                sendBroadcast(intent);
+                // 直接启动截图服务，不依赖 Activity 广播
+                startScreenCaptureFromOverlay();
             }
         });
 
@@ -234,6 +234,40 @@ public class OverlayService extends Service {
             btnAutoClick.setText("自动点击: 关");
             btnAutoClick.setBackgroundColor(Color.parseColor("#757575"));
         }
+    }
+
+    /**
+     * 从悬浮窗直接启动 Root 截图 (不需要回到 Activity)
+     */
+    private void startScreenCaptureFromOverlay() {
+        if (!YoloV8Ncnn.nativeIsLoaded()) {
+            appendLog("请先加载模型!");
+            return;
+        }
+
+        // 直接启动 Root 模式截图
+        Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
+        serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+
+        // 设置 callback
+        new Thread(() -> {
+            for (int i = 0; i < 30; i++) {
+                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
+                ScreenCaptureService svc = ScreenCaptureService.getInstance();
+                if (svc != null && ScreenCaptureService.isServiceRunning()) {
+                    svc.setCallback((boxes, inferTimeMs, fps, captureW, captureH) ->
+                            updateDetections(boxes, inferTimeMs, fps, captureW, captureH));
+                    setCapturing(true);
+                    return;
+                }
+            }
+            appendLog("服务启动超时");
+        }).start();
     }
 
     public void updateDetections(BoxInfo[] boxes, float inferTimeMs, float fps,
