@@ -5,6 +5,7 @@ plugins {
 android {
     namespace 'com.yolov8ncnn'
     compileSdk 34
+    ndkVersion "26.1.10909125"
 
     defaultConfig {
         applicationId "com.yolov8ncnn"

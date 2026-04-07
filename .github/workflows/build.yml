@@ -48,17 +48,31 @@ jobs:
 
     - name: Setup Gradle wrapper
       run: |
-        # Generate proper gradle wrapper if missing
-        if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-          echo "Generating Gradle wrapper..."
-          # Use gradle init to bootstrap
-          GRADLE_VER="8.4"
-          wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -O /tmp/gradle.zip
-          unzip -q /tmp/gradle.zip -d /tmp/
-          /tmp/gradle-${GRADLE_VER}/bin/gradle wrapper --gradle-version ${GRADLE_VER}
-          rm -rf /tmp/gradle*
+        # Generate proper gradle wrapper
+        GRADLE_VER="8.4"
+        wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -O /tmp/gradle.zip
+        unzip -q /tmp/gradle.zip -d /tmp/
+        /tmp/gradle-${GRADLE_VER}/bin/gradle wrapper --gradle-version ${GRADLE_VER} --no-configuration-cache -p /tmp/empty_proj 2>/dev/null || true
+        # Just copy the wrapper jar from the gradle distribution
+        mkdir -p gradle/wrapper
+        cp /tmp/gradle-${GRADLE_VER}/lib/gradle-wrapper-*.jar gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
+        # If that didn't work, download it directly
+        if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+          wget -q "https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VER}/gradle/wrapper/gradle-wrapper.jar" -O gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
         fi
+        # Create a proper gradlew
+        cat > gradlew << 'GWEOF'
+#!/bin/sh
+APP_HOME=$(cd "$(dirname "$0")" && pwd -P)
+CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+JAVACMD=java
+if [ -n "$JAVA_HOME" ]; then JAVACMD="$JAVA_HOME/bin/java"; fi
+exec "$JAVACMD" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
+GWEOF
         chmod +x gradlew
+        # Verify
+        ls -la gradle/wrapper/
+        rm -rf /tmp/gradle*
 
     - name: Build Debug APK
       run: ./gradlew assembleDebug --stacktrace
