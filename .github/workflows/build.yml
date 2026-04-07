@@ -25,8 +25,7 @@ jobs:
       uses: android-actions/setup-android@v3
 
     - name: Install Android SDK components
-      run: |
-        sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+      run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
 
     - name: Download NCNN Android Vulkan
       run: |
@@ -36,7 +35,6 @@ jobs:
         unzip -q "ncnn-${NCNN_VERSION}-android-vulkan.zip"
         mv "ncnn-${NCNN_VERSION}-android-vulkan" ncnn-android-vulkan
         rm "ncnn-${NCNN_VERSION}-android-vulkan.zip"
-        echo "NCNN directory contents:"
         ls -la ncnn-android-vulkan/
         ls -la ncnn-android-vulkan/arm64-v8a/lib/
 
@@ -44,33 +42,20 @@ jobs:
       run: |
         echo "sdk.dir=$ANDROID_HOME" > local.properties
         echo "ndk.dir=$ANDROID_HOME/ndk/26.1.10909125" >> local.properties
-        cat local.properties
 
     - name: Setup Gradle wrapper
       run: |
-        # Generate proper gradle wrapper
         GRADLE_VER="8.4"
         wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -O /tmp/gradle.zip
         unzip -q /tmp/gradle.zip -d /tmp/
-        /tmp/gradle-${GRADLE_VER}/bin/gradle wrapper --gradle-version ${GRADLE_VER} --no-configuration-cache -p /tmp/empty_proj 2>/dev/null || true
-        # Just copy the wrapper jar from the gradle distribution
         mkdir -p gradle/wrapper
         cp /tmp/gradle-${GRADLE_VER}/lib/gradle-wrapper-*.jar gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
-        # If that didn't work, download it directly
         if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-          wget -q "https://raw.githubusercontent.com/gradle/gradle/v${GRADLE_VER}/gradle/wrapper/gradle-wrapper.jar" -O gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
+          echo "Wrapper jar not found in lib, trying subprojects..."
+          find /tmp/gradle-${GRADLE_VER} -name "gradle-wrapper*.jar" -exec cp {} gradle/wrapper/gradle-wrapper.jar \;
         fi
-        # Create a proper gradlew
-        cat > gradlew << 'GWEOF'
-#!/bin/sh
-APP_HOME=$(cd "$(dirname "$0")" && pwd -P)
-CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
-JAVACMD=java
-if [ -n "$JAVA_HOME" ]; then JAVACMD="$JAVA_HOME/bin/java"; fi
-exec "$JAVACMD" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
-GWEOF
+        printf '#!/bin/sh\nAPP_HOME=$(cd "$(dirname "$0")" && pwd -P)\nCLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar\nJAVACMD=java\nif [ -n "$JAVA_HOME" ]; then JAVACMD="$JAVA_HOME/bin/java"; fi\nexec "$JAVACMD" -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"\n' > gradlew
         chmod +x gradlew
-        # Verify
         ls -la gradle/wrapper/
         rm -rf /tmp/gradle*
 
