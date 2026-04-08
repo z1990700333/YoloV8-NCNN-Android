@@ -131,11 +131,7 @@ public:
         inp.substract_mean_normalize(nullptr, nv);
 
         ncnn::Extractor ex = net_.create_extractor();
-        ex.set_light_mode(true);
-        ex.set_num_threads(nthr_);
-#if NCNN_VULKAN
-        if (gpu_) ex.set_vulkan_compute(true);
-#endif
+        // 线程数/Vulkan/轻量模式已在 net_.opt 中统一配置，无需在 Extractor 重复设置
         ex.input(inB_.c_str(), inp);
         ncnn::Mat out; ex.extract(outB_.c_str(), out);
 
