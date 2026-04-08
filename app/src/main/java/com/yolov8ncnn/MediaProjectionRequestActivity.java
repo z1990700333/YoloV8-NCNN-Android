@@ -60,7 +60,6 @@ public class MediaProjectionRequestActivity extends Activity {
                 Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
                 serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
                 serviceIntent.putExtra(ScreenCaptureService.EXTRA_DATA, data);
-                serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, false);
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     startForegroundService(serviceIntent);
