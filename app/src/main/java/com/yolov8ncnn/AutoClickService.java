@@ -36,8 +36,7 @@ public class AutoClickService extends AccessibilityService {
         info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK;
         info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
         info.notificationTimeout = 100;
-        info.flags = AccessibilityServiceInfo.FLAG_REQUEST_ENHANCED_WEB_ACCESSIBILITY
-                | AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
+        info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
         setServiceInfo(info);
 
         Log.i(TAG, "AutoClickService connected");

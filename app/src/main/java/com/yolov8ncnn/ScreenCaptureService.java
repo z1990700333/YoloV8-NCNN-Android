@@ -122,17 +122,15 @@ public class ScreenCaptureService extends Service {
         useRootCapture = intent.getBooleanExtra(EXTRA_USE_ROOT, false);
         log("onStartCommand: useRoot=" + useRootCapture);
 
-        // Root 模式不需要 MEDIA_PROJECTION 类型，否则 Android 14+ 会 SecurityException 闪退
-        if (useRootCapture) {
-            startForeground(NOTIFICATION_ID, buildNotification());
+        // Root 模式用 DATA_SYNC 类型; MediaProjection 模式用 MEDIA_PROJECTION 类型
+        // Android 14+ 要求 startForeground 必须指定 manifest 中声明的 foregroundServiceType
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int fgType = useRootCapture
+                    ? ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    : ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+            startForeground(NOTIFICATION_ID, buildNotification(), fgType);
         } else {
-            // MediaProjection 模式: Android 10+ 必须指定 foregroundServiceType
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIFICATION_ID, buildNotification(),
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-            } else {
-                startForeground(NOTIFICATION_ID, buildNotification());
-            }
+            startForeground(NOTIFICATION_ID, buildNotification());
         }
 
         if (useRootCapture) {

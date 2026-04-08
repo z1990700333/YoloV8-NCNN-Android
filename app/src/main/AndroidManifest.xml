@@ -45,7 +45,7 @@
             android:excludeFromRecents="true"
             android:taskAffinity="" />
 
-        <!-- Screen Capture Service -->
+        <!-- Screen Capture Service (Root模式用dataSync类型, MP模式用mediaProjection类型) -->
         <service
             android:name=".ScreenCaptureService"
             android:exported="false"

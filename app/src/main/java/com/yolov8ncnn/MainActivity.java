@@ -571,23 +571,47 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             try {
                 String pkg = getPackageName();
-                String svc = pkg + "/.AutoClickService";
-                Process su = Runtime.getRuntime().exec("su");
-                java.io.OutputStream os = su.getOutputStream();
-                // 先获取当前已启用的无障碍服务
-                os.write(("settings get secure enabled_accessibility_services\n").getBytes());
-                os.flush();
-                // 设置无障碍服务
-                os.write(("settings put secure enabled_accessibility_services " + svc + "\n").getBytes());
-                os.write("settings put secure accessibility_enabled 1\n".getBytes());
-                os.write("exit\n".getBytes());
-                os.flush();
-                int ret = su.waitFor();
-                String msg = ret == 0 ? "Root自动授权无障碍成功" : "Root自动授权无障碍失败(code=" + ret + ")";
-                appendLog(msg);
+                String svc = pkg + "/" + pkg + ".AutoClickService";
+
+                // 1. 读取当前已启用的无障碍服务
+                Process getCur = Runtime.getRuntime().exec(new String[]{"su", "-c",
+                        "settings get secure enabled_accessibility_services"});
+                java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(getCur.getInputStream()));
+                String current = br.readLine();
+                getCur.waitFor();
+                if (current == null || "null".equals(current)) current = "";
+
+                // 2. 如果已包含则跳过
+                if (current.contains(svc)) {
+                    appendLog("无障碍服务已在列表中");
+                } else {
+                    // 追加到现有列表（用:分隔）
+                    String newVal = current.isEmpty() ? svc : current + ":" + svc;
+                    Process su = Runtime.getRuntime().exec("su");
+                    java.io.OutputStream os = su.getOutputStream();
+                    os.write(("settings put secure enabled_accessibility_services '" + newVal + "'\n").getBytes());
+                    os.write("settings put secure accessibility_enabled 1\n".getBytes());
+                    os.write("exit\n".getBytes());
+                    os.flush();
+                    int ret = su.waitFor();
+                    appendLog(ret == 0 ? "Root自动授权无障碍成功" : "Root自动授权无障碍失败(code=" + ret + ")");
+                }
+
+                // 3. 等待服务真正连接（最多3秒）
+                for (int i = 0; i < 30; i++) {
+                    Thread.sleep(100);
+                    if (AutoClickService.isRunning()) {
+                        appendLog("无障碍服务已连接");
+                        break;
+                    }
+                }
+                if (!AutoClickService.isRunning()) {
+                    appendLog("无障碍服务未能启动，请手动开启");
+                }
+
                 runOnUiThread(() -> {
-                    // 延迟刷新状态
-                    new Handler(Looper.getMainLooper()).postDelayed(this::updatePermissionStatus, 1000);
+                    new Handler(Looper.getMainLooper()).postDelayed(this::updatePermissionStatus, 500);
                 });
             } catch (Exception e) {
                 appendLog("Root授权无障碍异常: " + e.getMessage());
