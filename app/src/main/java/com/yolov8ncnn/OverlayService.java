@@ -52,9 +52,9 @@ public class OverlayService extends Service {
     private boolean autoClickEnabled = false;
     private int captureW = 1, captureH = 1;
 
-    // Log buffer
+    // Log buffer (悬浮窗只显示最近2行简短提示)
     private final List<String> logLines = new ArrayList<>();
-    private static final int MAX_LOG_LINES = 6;
+    private static final int MAX_LOG_LINES = 2;
 
     public static OverlayService getInstance() { return sInstance; }
 
@@ -105,8 +105,12 @@ public class OverlayService extends Service {
             if (isCapturing) {
                 stopScreenCapture();
             } else {
-                // 直接启动截图服务，不依赖 Activity 广播
-                startScreenCaptureFromOverlay();
+                int mode = settings.getCaptureMode();
+                if (mode == 1) {
+                    startScreenCaptureRoot();
+                } else {
+                    startScreenCaptureMediaProjection();
+                }
             }
         });
 
@@ -237,15 +241,33 @@ public class OverlayService extends Service {
     }
 
     /**
-     * 从悬浮窗直接启动 Root 截图 (不需要回到 Activity)
+     * MediaProjection 模式：启动透明 Activity 请求屏幕录制权限
      */
-    private void startScreenCaptureFromOverlay() {
+    private void startScreenCaptureMediaProjection() {
         if (!YoloV8Ncnn.nativeIsLoaded()) {
             appendLog("请先加载模型!");
+            MainActivity.appendLog("请先加载模型!");
+            return;
+        }
+        appendLog("启动MP...");
+        MainActivity.appendLog("悬浮窗启动 MediaProjection 模式");
+        Intent intent = new Intent(this, MediaProjectionRequestActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
+    }
+
+    /**
+     * Root 模式：直接启动 Root 截图
+     */
+    private void startScreenCaptureRoot() {
+        if (!YoloV8Ncnn.nativeIsLoaded()) {
+            appendLog("请先加载模型!");
+            MainActivity.appendLog("请先加载模型!");
             return;
         }
 
-        // 直接启动 Root 模式截图
+        appendLog("启动Root...");
+        MainActivity.appendLog("悬浮窗启动 Root 截图模式");
         Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
         serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, true);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -254,9 +276,8 @@ public class OverlayService extends Service {
             startService(serviceIntent);
         }
 
-        // 设置 callback
         new Thread(() -> {
-            for (int i = 0; i < 30; i++) {
+            for (int i = 0; i < 50; i++) {
                 try { Thread.sleep(100); } catch (InterruptedException ignored) {}
                 ScreenCaptureService svc = ScreenCaptureService.getInstance();
                 if (svc != null && ScreenCaptureService.isServiceRunning()) {
@@ -266,7 +287,8 @@ public class OverlayService extends Service {
                     return;
                 }
             }
-            appendLog("服务启动超时");
+            appendLog("超时");
+            MainActivity.appendLog("截图服务启动超时!");
         }).start();
     }
 

@@ -36,6 +36,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Transparent Activity for MediaProjection consent (launched from overlay) -->
+        <activity
+            android:name=".MediaProjectionRequestActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:taskAffinity="" />
+
         <!-- Screen Capture Service -->
         <service
             android:name=".ScreenCaptureService"

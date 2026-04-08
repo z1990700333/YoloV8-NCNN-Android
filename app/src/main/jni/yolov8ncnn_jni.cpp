@@ -1,4 +1,5 @@
 // yolov8ncnn_jni.cpp - YOLOv8 DFL detection head + NCNN JNI bridge
+// Optimized per nihui/ncnn-android-yolov8 official best practices
 #include <jni.h>
 #include <android/log.h>
 #include <android/asset_manager.h>
@@ -12,8 +13,15 @@
 #include <mutex>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <linux/fb.h>
+#include <cerrno>
 #include "net.h"
 #include "cpu.h"
+#include "layer.h"
 #if NCNN_VULKAN
 #include "gpu.h"
 #endif
@@ -50,17 +58,6 @@ static void nms_sorted(std::vector<BoxInfo>& boxes, float nms_thresh) {
 
 static inline float sigmoid(float x) { return 1.f / (1.f + expf(-x)); }
 
-// DFL: softmax over reg_max values then weighted sum -> distance
-static inline float dfl_decode(const float* src, int reg_max) {
-    float maxv = src[0];
-    for (int i = 1; i < reg_max; i++) if (src[i] > maxv) maxv = src[i];
-    float sum = 0.f, buf[16];
-    for (int i = 0; i < reg_max; i++) { buf[i] = expf(src[i] - maxv); sum += buf[i]; }
-    float val = 0.f;
-    for (int i = 0; i < reg_max; i++) val += (buf[i] / sum) * i;
-    return val;
-}
-
 // Auto-detect blob names from .param file
 static void detect_blob_names(const char* path, std::string& inN, std::string& outN) {
     inN = "images"; outN = "output0";
@@ -91,12 +88,14 @@ public:
         std::lock_guard<std::mutex> lock(mtx_);
         net_.clear(); bpool_.clear(); wpool_.clear();
         tsize_ = ts; nthr_ = nt;
-        ncnn::set_cpu_powersave(2); ncnn::set_omp_num_threads(nt);
+        ncnn::set_cpu_powersave(2);  // 绑定大核心
+        ncnn::set_omp_num_threads(nt);
         setupOpt(gpu);
         detect_blob_names(pp, inB_, outB_);
         if (net_.load_param(pp) != 0) { LOGE("load_param fail"); return false; }
         if (net_.load_model(bp) != 0) { LOGE("load_model fail"); return false; }
         loaded_ = true;
+        detectCount_ = 0;
         LOGI("Model loaded: target=%d gpu=%d thr=%d", ts, (int)gpu_, nt);
         return true;
     }
@@ -105,12 +104,13 @@ public:
         std::lock_guard<std::mutex> lock(mtx_);
         net_.clear(); bpool_.clear(); wpool_.clear();
         tsize_ = ts; nthr_ = nt;
-        ncnn::set_cpu_powersave(2); ncnn::set_omp_num_threads(nt);
+        ncnn::set_cpu_powersave(2);
+        ncnn::set_omp_num_threads(nt);
         setupOpt(gpu);
         inB_ = "images"; outB_ = "output0";
         if (net_.load_param(mgr, pp) != 0) return false;
         if (net_.load_model(mgr, bp) != 0) return false;
-        loaded_ = true; return true;
+        loaded_ = true; detectCount_ = 0; return true;
     }
 
     std::vector<BoxInfo> detect(const unsigned char* px, int pxT, int iW, int iH,
@@ -119,7 +119,7 @@ public:
         if (!loaded_) return res;
         auto t0 = std::chrono::high_resolution_clock::now();
 
-        // Letterbox
+        // Letterbox: from_pixels_resize 融合解码+缩放（官方推荐，避免中间分配）
         float sc = std::min((float)tsize_/iW, (float)tsize_/iH);
         int sw = (int)(iW*sc), sh = (int)(iH*sc);
         int pW = (tsize_-sw)/2, pH = (tsize_-sh)/2;
@@ -131,14 +131,18 @@ public:
         inp.substract_mean_normalize(nullptr, nv);
 
         ncnn::Extractor ex = net_.create_extractor();
-        ex.set_light_mode(true); ex.set_num_threads(nthr_);
+        ex.set_light_mode(true);
+        ex.set_num_threads(nthr_);
 #if NCNN_VULKAN
         if (gpu_) ex.set_vulkan_compute(true);
 #endif
         ex.input(inB_.c_str(), inp);
         ncnn::Mat out; ex.extract(outB_.c_str(), out);
 
-        LOGI("Out: dims=%d c=%d h=%d w=%d", out.dims, out.c, out.h, out.w);
+        // 只在前3帧输出调试信息（减少 logcat I/O 开销）
+        if (detectCount_ < 3) {
+            LOGI("Out: dims=%d c=%d h=%d w=%d", out.dims, out.c, out.h, out.w);
+        }
 
         // Build anchor grid: strides 8,16,32
         std::vector<Anchor> anc;
@@ -160,7 +164,9 @@ public:
             fd=out.w; na=out.h; tr=true;
         } else { LOGW("dims=%d unsupported", out.dims); goto end; }
 
-        LOGI("fd=%d na=%d tr=%d exp=%d", fd, na, (int)tr, totAnc);
+        if (detectCount_ < 3) {
+            LOGI("fd=%d na=%d tr=%d exp=%d", fd, na, (int)tr, totAnc);
+        }
 
         // Fix anchor count if mismatch
         if (na != totAnc) {
@@ -177,32 +183,56 @@ public:
             // Check DFL: featDim = 4*16 + nc
             int rm = 16, nc = fd - 4*rm;
             if (nc >= 1 && nc <= 1000) {
-                // DFL format
-                LOGI("DFL: rm=%d nc=%d", rm, nc);
+                // DFL format — 使用 ncnn Softmax layer 加速（利用SIMD）
+                if (detectCount_ < 3) LOGI("DFL: rm=%d nc=%d", rm, nc);
+
+                // 创建 Softmax layer 用于 DFL decode（比手动 expf 快，利用 NEON SIMD）
+                ncnn::Layer* softmax = ncnn::create_layer("Softmax");
+                ncnn::ParamDict pd;
+                pd.set(0, 1); // axis=1
+                pd.set(1, 1);
+                softmax->load_param(pd);
+                ncnn::Option opt;
+                opt.num_threads = 1;
+                opt.use_packing_layout = false;
+                softmax->create_pipeline(opt);
+
                 for (int i = 0; i < na && i < (int)anc.size(); i++) {
-                    float ft[256];
-                    if (!tr) { for(int f=0;f<fd;f++) ft[f]=out.row(f)[i]; }
-                    else { const float*r=out.row(i); for(int f=0;f<fd;f++) ft[f]=r[f]; }
+                    const float* row_ptr;
+                    float ft_buf[256];
+                    if (!tr) {
+                        for(int f=0;f<fd;f++) ft_buf[f]=out.row(f)[i];
+                        row_ptr = ft_buf;
+                    } else {
+                        row_ptr = out.row(i);
+                    }
 
                     // Class scores (need sigmoid - raw from final Conv)
                     float mx = -1e9f; int bc = 0;
                     for (int c=0; c<nc; c++) {
-                        float s = sigmoid(ft[4*rm+c]);
+                        float s = sigmoid(row_ptr[4*rm+c]);
                         if (s > mx) { mx=s; bc=c; }
                     }
                     if (mx < cTh) continue;
 
-                    // DFL bbox decode
-                    float dl = dfl_decode(ft+0*rm, rm);
-                    float dt = dfl_decode(ft+1*rm, rm);
-                    float dr = dfl_decode(ft+2*rm, rm);
-                    float db = dfl_decode(ft+3*rm, rm);
+                    // DFL bbox decode via ncnn Softmax
+                    ncnn::Mat dfl_raw(rm, 4, (void*)row_ptr, 4u);
+                    ncnn::Mat dfl_sm;
+                    softmax->forward(dfl_raw, dfl_sm, opt);
+
+                    float pred_ltrb[4];
+                    for (int k = 0; k < 4; k++) {
+                        float dis = 0.f;
+                        const float* sm_row = dfl_sm.row(k);
+                        for (int l = 0; l < rm; l++) dis += l * sm_row[l];
+                        pred_ltrb[k] = dis;
+                    }
 
                     int st = anc[i].stride;
-                    float x1 = (anc[i].cx - dl) * st;
-                    float y1 = (anc[i].cy - dt) * st;
-                    float x2 = (anc[i].cx + dr) * st;
-                    float y2 = (anc[i].cy + db) * st;
+                    float x1 = (anc[i].cx - pred_ltrb[0]) * st;
+                    float y1 = (anc[i].cy - pred_ltrb[1]) * st;
+                    float x2 = (anc[i].cx + pred_ltrb[2]) * st;
+                    float y2 = (anc[i].cy + pred_ltrb[3]) * st;
 
                     x1=(x1-pW)/sc; y1=(y1-pH)/sc; x2=(x2-pW)/sc; y2=(y2-pH)/sc;
                     x1=std::max(0.f,std::min(x1,(float)iW));
@@ -211,12 +241,15 @@ public:
                     y2=std::max(0.f,std::min(y2,(float)iH));
                     if (x2>x1 && y2>y1) res.push_back({x1,y1,x2,y2,mx,bc});
                 }
+
+                softmax->destroy_pipeline(opt);
+                delete softmax;
             } else {
-                // Simple: 4+nc or 5+nc
+                // Simple: 4+nc or 5+nc (YOLOv5 style)
                 nc = fd - 4; bool ho = false;
                 if (nc<1||nc>1000) { nc=fd-5; ho=true; }
                 if (nc<1||nc>1000) { LOGW("unknown fd=%d",fd); goto end; }
-                LOGI("Simple: nc=%d obj=%d", nc, (int)ho);
+                if (detectCount_ < 3) LOGI("Simple: nc=%d obj=%d", nc, (int)ho);
                 int co = ho ? 5 : 4;
                 for (int i=0; i<na && i<(int)anc.size(); i++) {
                     float ft[2048];
@@ -244,7 +277,11 @@ public:
         nms_sorted(res, nTh);
         auto t1 = std::chrono::high_resolution_clock::now();
         ms = std::chrono::duration<float, std::milli>(t1-t0).count();
-        LOGI("Detect: %d boxes %.1fms", (int)res.size(), ms);
+        // 只在前3帧或每100帧输出日志
+        if (detectCount_ < 3 || detectCount_ % 100 == 0) {
+            LOGI("Detect: %d boxes %.1fms (frame %d)", (int)res.size(), ms, detectCount_);
+        }
+        detectCount_++;
         return res;
     }
 
@@ -258,13 +295,16 @@ private:
         net_.opt.num_threads = nthr_;
         net_.opt.blob_allocator = &bpool_;
         net_.opt.workspace_allocator = &wpool_;
-        net_.opt.use_packing_layout = true;
-        net_.opt.use_fp16_packed = true;
-        net_.opt.use_fp16_storage = true;
+        // NCNN 官方推荐优化选项
+        net_.opt.use_packing_layout = true;   // NEON SIMD 向量化
+        net_.opt.use_fp16_packed = true;       // fp16 打包，减少带宽
+        net_.opt.use_fp16_storage = true;      // fp16 存储，减半内存
+        net_.opt.use_fp16_arithmetic = true;   // fp16 计算（需要硬件支持）
+        net_.opt.openmp_blocktime = 0;         // 减少 OpenMP 空转开销
 #if NCNN_VULKAN
         gpu_ = gpu && ncnn::get_gpu_count() > 0;
         net_.opt.use_vulkan_compute = gpu_;
-        if (gpu_) { net_.opt.use_fp16_arithmetic = true; LOGI("Vulkan on"); }
+        if (gpu_) LOGI("Vulkan GPU enabled");
 #else
         gpu_ = false;
 #endif
@@ -276,6 +316,7 @@ private:
     std::string inB_="images", outB_="output0";
     int tsize_=640, nthr_=4;
     bool gpu_=false, loaded_=false;
+    int detectCount_ = 0;
 };
 
 static YoloV8Detector g_det;
@@ -288,7 +329,7 @@ Java_com_yolov8ncnn_YoloV8Ncnn_nativeInit(JNIEnv*, jclass) {
     ncnn::create_gpu_instance();
     LOGI("NCNN init, GPUs: %d", ncnn::get_gpu_count());
 #else
-    LOGI("NCNN init CPU");
+    LOGI("NCNN init CPU-only");
 #endif
 }
 
@@ -355,7 +396,9 @@ Java_com_yolov8ncnn_YoloV8Ncnn_nativeDetectBuffer(
     jfloat cTh, jfloat nTh) {
     uint8_t* bp=(uint8_t*)env->GetDirectBufferAddress(buf);
     if (!bp) return nullptr;
-    int exp=w*4; std::vector<uint8_t> cmp;
+    int exp=w*4;
+    // 静态 buffer 避免每帧分配（复用）
+    static thread_local std::vector<uint8_t> cmp;
     const unsigned char* px=bp;
     if (rs!=exp) {
         cmp.resize(w*h*4);
@@ -384,6 +427,94 @@ Java_com_yolov8ncnn_YoloV8Ncnn_nativeIsLoaded(JNIEnv*, jclass) {
 JNIEXPORT jboolean JNICALL
 Java_com_yolov8ncnn_YoloV8Ncnn_nativeHasGpu(JNIEnv*, jclass) {
     return (jboolean)g_det.hasGpu();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Native framebuffer capture via /dev/graphics/fb0 (root required)
+// ═══════════════════════════════════════════════════════════════════════
+
+JNIEXPORT jintArray JNICALL
+Java_com_yolov8ncnn_YoloV8Ncnn_nativeCaptureFramebuffer(
+    JNIEnv* env, jclass, jobject outBuf) {
+    int fd = open("/dev/graphics/fb0", O_RDONLY);
+    if (fd < 0) {
+        LOGE("fb0 open failed: %s", strerror(errno));
+        return nullptr;
+    }
+
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &vinfo) < 0 ||
+        ioctl(fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
+        LOGE("fb0 ioctl failed: %s", strerror(errno));
+        close(fd);
+        return nullptr;
+    }
+
+    int w = vinfo.xres;
+    int h = vinfo.yres;
+    int bpp = vinfo.bits_per_pixel / 8;
+    int lineLen = finfo.line_length;
+    size_t mapSize = (size_t)lineLen * h;
+
+    void* mapped = mmap(nullptr, mapSize, PROT_READ, MAP_SHARED, fd, 0);
+    if (mapped == MAP_FAILED) {
+        LOGE("fb0 mmap failed: %s", strerror(errno));
+        close(fd);
+        return nullptr;
+    }
+
+    uint8_t* dst = (uint8_t*)env->GetDirectBufferAddress(outBuf);
+    jlong bufCap = env->GetDirectBufferCapacity(outBuf);
+    if (!dst || bufCap < (jlong)(w * h * 4)) {
+        LOGE("fb0: buffer too small (need %d, have %lld)", w*h*4, (long long)bufCap);
+        munmap(mapped, mapSize);
+        close(fd);
+        return nullptr;
+    }
+
+    uint8_t* src = (uint8_t*)mapped;
+
+    if (bpp == 4) {
+        bool isBGR = (vinfo.blue.offset == 0 && vinfo.red.offset == 16);
+        if (isBGR) {
+            for (int y = 0; y < h; y++) {
+                uint8_t* s = src + y * lineLen;
+                uint8_t* d = dst + y * w * 4;
+                for (int x = 0; x < w; x++) {
+                    d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; d[3] = 255;
+                    s += 4; d += 4;
+                }
+            }
+        } else {
+            for (int y = 0; y < h; y++)
+                memcpy(dst + y * w * 4, src + y * lineLen, w * 4);
+        }
+    } else if (bpp == 2) {
+        for (int y = 0; y < h; y++) {
+            uint16_t* s = (uint16_t*)(src + y * lineLen);
+            uint8_t* d = dst + y * w * 4;
+            for (int x = 0; x < w; x++) {
+                uint16_t px = s[x];
+                d[0] = ((px >> 11) & 0x1F) * 255 / 31;
+                d[1] = ((px >> 5) & 0x3F) * 255 / 63;
+                d[2] = (px & 0x1F) * 255 / 31;
+                d[3] = 255;
+                d += 4;
+            }
+        }
+    } else {
+        for (int y = 0; y < h; y++)
+            memcpy(dst + y * w * bpp, src + y * lineLen, w * bpp);
+    }
+
+    munmap(mapped, mapSize);
+    close(fd);
+
+    jintArray result = env->NewIntArray(3);
+    int info[3] = {w, h, 4};
+    env->SetIntArrayRegion(result, 0, 3, info);
+    return result;
 }
 
 } // extern "C"

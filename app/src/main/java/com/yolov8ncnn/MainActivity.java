@@ -12,6 +12,8 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.View;
@@ -22,6 +24,7 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -36,6 +39,10 @@ import androidx.core.content.ContextCompat;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -49,6 +56,11 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_NOTIFICATIONS = 1007;
     private static final int REQUEST_MANAGE_STORAGE = 1008;
 
+    // 静态引用，供 Service 写日志
+    private static WeakReference<MainActivity> sInstance;
+    private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
+    private static final SimpleDateFormat sTimeFmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+
     private SettingsManager settings;
 
     private SeekBar seekConfThresh, seekNmsThresh, seekCaptureScale;
@@ -58,20 +70,41 @@ public class MainActivity extends AppCompatActivity {
     private Button btnSelectParam, btnSelectBin, btnLoadModel;
     private Button btnStartOverlay, btnStartCapture;
     private Button btnGrantOverlay, btnGrantAccessibility, btnGrantStorage, btnGrantNotification;
+    private Button btnClearLog;
     private TextView tvParamPath, tvBinPath, tvModelStatus;
     private TextView tvOverlayStatus, tvAccessibilityStatus, tvStorageStatus, tvNotificationStatus;
     private TextView tvRootStatus;
+    private TextView tvMainLog;
+    private ScrollView svLog;
     private EditText etTargetLabel, etClickDelay;
     private RadioGroup rgCaptureMode;
     private RadioButton rbMediaProjection, rbRoot;
 
     private BroadcastReceiver startCaptureReceiver;
 
+    /**
+     * 静态方法：从任何地方写日志到主界面（线程安全）
+     */
+    public static void appendLog(String msg) {
+        sMainHandler.post(() -> {
+            MainActivity act = sInstance != null ? sInstance.get() : null;
+            if (act != null && act.tvMainLog != null) {
+                String time = sTimeFmt.format(new Date());
+                act.tvMainLog.append("[" + time + "] " + msg + "\n");
+                // 自动滚动到底部
+                if (act.svLog != null) {
+                    act.svLog.post(() -> act.svLog.fullScroll(View.FOCUS_DOWN));
+                }
+            }
+        });
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        sInstance = new WeakReference<>(this);
         settings = new SettingsManager(this);
         YoloV8Ncnn.nativeInit();
 
@@ -79,6 +112,8 @@ public class MainActivity extends AppCompatActivity {
         loadSettings();
         updatePermissionStatus();
         registerReceivers();
+
+        appendLog("应用启动");
     }
 
     private void initViews() {
@@ -182,6 +217,10 @@ public class MainActivity extends AppCompatActivity {
                 if (hasRoot) {
                     tvRootStatus.setText("Root: 可用");
                     tvRootStatus.setTextColor(0xFF4CAF50);
+                    // Root 自动授权无障碍服务
+                    if (!AutoClickService.isRunning()) {
+                        autoGrantAccessibilityViaRoot();
+                    }
                 } else {
                     tvRootStatus.setText("Root: 不可用");
                     tvRootStatus.setTextColor(0xFFF44336);
@@ -189,6 +228,16 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
         }).start();
+
+        // Sync radio buttons with saved capture mode
+        int savedMode = settings.getCaptureMode();
+        if (savedMode == 1) rbRoot.setChecked(true);
+        else rbMediaProjection.setChecked(true);
+
+        rgCaptureMode.setOnCheckedChangeListener((group, checkedId) -> {
+            if (checkedId == R.id.rb_root) settings.setCaptureMode(1);
+            else settings.setCaptureMode(0);
+        });
 
         // 权限按钮
         btnGrantOverlay = findViewById(R.id.btn_grant_overlay);
@@ -211,6 +260,15 @@ public class MainActivity extends AppCompatActivity {
 
         btnStartOverlay.setOnClickListener(v -> startOverlayService());
         btnStartCapture.setOnClickListener(v -> startScreenCapture());
+
+        // 日志面板
+        tvMainLog = findViewById(R.id.tv_main_log);
+        svLog = findViewById(R.id.sv_log);
+        btnClearLog = findViewById(R.id.btn_clear_log);
+        btnClearLog.setOnClickListener(v -> {
+            tvMainLog.setText("");
+            appendLog("日志已清除");
+        });
 
         Button btnSaveSettings = findViewById(R.id.btn_save_settings);
         btnSaveSettings.setOnClickListener(v -> saveExtraSettings());
@@ -384,7 +442,11 @@ public class MainActivity extends AppCompatActivity {
         }
 
         boolean useRoot = rbRoot.isChecked();
+        settings.setCaptureMode(useRoot ? 1 : 0);
         Log.i(TAG, "开始截图 useRoot=" + useRoot + " modelLoaded=" + YoloV8Ncnn.nativeIsLoaded());
+
+        OverlayService ov = OverlayService.getInstance();
+        if (ov != null) ov.appendLog("从主界面启动: " + (useRoot ? "Root" : "MediaProjection"));
 
         if (useRoot) {
             Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
@@ -394,6 +456,8 @@ public class MainActivity extends AppCompatActivity {
             setupCallback();
             Toast.makeText(this, "Root 截图模式已启动!", Toast.LENGTH_SHORT).show();
         } else {
+            Log.i(TAG, "请求 MediaProjection 授权...");
+            if (ov != null) ov.appendLog("请求屏幕录制授权...");
             MediaProjectionManager mpManager =
                     (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             startActivityForResult(mpManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
@@ -402,12 +466,14 @@ public class MainActivity extends AppCompatActivity {
 
     private void setupCallback() {
         new Thread(() -> {
-            // 等待服务启动，最多等3秒
-            for (int i = 0; i < 30; i++) {
+            // 等待服务启动，最多等5秒
+            for (int i = 0; i < 50; i++) {
                 try { Thread.sleep(100); } catch (InterruptedException ignored) {}
                 ScreenCaptureService service = ScreenCaptureService.getInstance();
                 if (service != null && ScreenCaptureService.isServiceRunning()) {
                     Log.i(TAG, "ScreenCaptureService ready after " + (i*100) + "ms");
+                    OverlayService ov = OverlayService.getInstance();
+                    if (ov != null) ov.appendLog("截图服务已就绪 (" + (i*100) + "ms)");
                     service.setCallback((boxes, inferTimeMs, fps, captureW, captureH) -> {
                         OverlayService overlay = OverlayService.getInstance();
                         if (overlay != null) {
@@ -420,6 +486,8 @@ public class MainActivity extends AppCompatActivity {
                 }
             }
             Log.e(TAG, "ScreenCaptureService did not start in time");
+            OverlayService ov = OverlayService.getInstance();
+            if (ov != null) ov.appendLog("截图服务启动超时!");
         }).start();
     }
 
@@ -430,7 +498,10 @@ public class MainActivity extends AppCompatActivity {
 
         switch (requestCode) {
             case REQUEST_MEDIA_PROJECTION:
+                Log.i(TAG, "MP onActivityResult: resultCode=" + resultCode + " data=" + data);
+                OverlayService ovMP = OverlayService.getInstance();
                 if (resultCode == RESULT_OK && data != null) {
+                    if (ovMP != null) ovMP.appendLog("MP授权成功, 启动服务...");
                     Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
                     serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
                     serviceIntent.putExtra(ScreenCaptureService.EXTRA_DATA, data);
@@ -439,6 +510,10 @@ public class MainActivity extends AppCompatActivity {
                     else startService(serviceIntent);
                     setupCallback();
                     Toast.makeText(this, "屏幕捕获已启动!", Toast.LENGTH_SHORT).show();
+                } else {
+                    Log.w(TAG, "MP授权被拒绝: resultCode=" + resultCode);
+                    if (ovMP != null) ovMP.appendLog("MP授权被拒绝: code=" + resultCode);
+                    Toast.makeText(this, "屏幕录制授权被拒绝", Toast.LENGTH_SHORT).show();
                 }
                 break;
             case REQUEST_PICK_PARAM:
@@ -483,11 +558,47 @@ public class MainActivity extends AppCompatActivity {
         updatePermissionStatus();
     }
 
-    @Override protected void onResume() { super.onResume(); updatePermissionStatus(); }
+    @Override protected void onResume() {
+        super.onResume();
+        sInstance = new WeakReference<>(this);
+        updatePermissionStatus();
+    }
+
+    /**
+     * 通过 Root 自动启用无障碍服务
+     */
+    private void autoGrantAccessibilityViaRoot() {
+        new Thread(() -> {
+            try {
+                String pkg = getPackageName();
+                String svc = pkg + "/.AutoClickService";
+                Process su = Runtime.getRuntime().exec("su");
+                java.io.OutputStream os = su.getOutputStream();
+                // 先获取当前已启用的无障碍服务
+                os.write(("settings get secure enabled_accessibility_services\n").getBytes());
+                os.flush();
+                // 设置无障碍服务
+                os.write(("settings put secure enabled_accessibility_services " + svc + "\n").getBytes());
+                os.write("settings put secure accessibility_enabled 1\n".getBytes());
+                os.write("exit\n".getBytes());
+                os.flush();
+                int ret = su.waitFor();
+                String msg = ret == 0 ? "Root自动授权无障碍成功" : "Root自动授权无障碍失败(code=" + ret + ")";
+                appendLog(msg);
+                runOnUiThread(() -> {
+                    // 延迟刷新状态
+                    new Handler(Looper.getMainLooper()).postDelayed(this::updatePermissionStatus, 1000);
+                });
+            } catch (Exception e) {
+                appendLog("Root授权无障碍异常: " + e.getMessage());
+            }
+        }).start();
+    }
 
     @Override
     protected void onDestroy() {
         if (startCaptureReceiver != null) unregisterReceiver(startCaptureReceiver);
+        sInstance = null;
         super.onDestroy();
     }
 

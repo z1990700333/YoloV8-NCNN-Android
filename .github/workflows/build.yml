@@ -30,7 +30,7 @@ jobs:
     - name: Download NCNN Android Vulkan
       run: |
         cd app/src/main/jni
-        NCNN_VERSION="20240410"
+        NCNN_VERSION="20260113"
         wget -q "https://github.com/Tencent/ncnn/releases/download/${NCNN_VERSION}/ncnn-${NCNN_VERSION}-android-vulkan.zip"
         unzip -q "ncnn-${NCNN_VERSION}-android-vulkan.zip"
         mv "ncnn-${NCNN_VERSION}-android-vulkan" ncnn-android-vulkan

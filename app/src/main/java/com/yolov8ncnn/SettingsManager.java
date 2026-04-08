@@ -22,6 +22,7 @@ public class SettingsManager {
     private static final String KEY_CLICK_DELAY = "click_delay";
     private static final String KEY_TARGET_LABEL = "target_label";
     private static final String KEY_CAPTURE_SCALE = "capture_scale";
+    private static final String KEY_CAPTURE_MODE = "capture_mode"; // 0=MediaProjection, 1=Root
 
     private final SharedPreferences prefs;
 
@@ -142,5 +143,14 @@ public class SettingsManager {
 
     public void setCaptureScale(float scale) {
         prefs.edit().putFloat(KEY_CAPTURE_SCALE, scale).apply();
+    }
+
+    // ── Capture mode (0=MediaProjection, 1=Root) ───────────────────────
+    public int getCaptureMode() {
+        return prefs.getInt(KEY_CAPTURE_MODE, 0);
+    }
+
+    public void setCaptureMode(int mode) {
+        prefs.edit().putInt(KEY_CAPTURE_MODE, mode).apply();
     }
 }

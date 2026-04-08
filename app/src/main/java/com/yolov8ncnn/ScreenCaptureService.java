@@ -6,6 +6,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
+import android.content.pm.ServiceInfo;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
@@ -83,6 +84,7 @@ public class ScreenCaptureService extends Service {
 
     private void log(String msg) {
         Log.i(TAG, msg);
+        MainActivity.appendLog(msg);
         OverlayService ov = OverlayService.getInstance();
         if (ov != null) ov.appendLog(msg);
     }
@@ -115,18 +117,27 @@ public class ScreenCaptureService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) { stopSelf(); return START_NOT_STICKY; }
+        if (intent == null) { log("onStartCommand: intent=null"); stopSelf(); return START_NOT_STICKY; }
 
-        startForeground(NOTIFICATION_ID, buildNotification());
+        // Android 14+ 必须指定 foregroundServiceType，否则 SecurityException
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification());
+        }
+
         useRootCapture = intent.getBooleanExtra(EXTRA_USE_ROOT, false);
+        log("onStartCommand: useRoot=" + useRootCapture);
 
         if (useRootCapture) {
             startRootCapture();
         } else {
             int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1);
             Intent data = intent.getParcelableExtra(EXTRA_DATA);
+            log("MP数据: resultCode=" + resultCode + " data=" + (data != null ? "OK" : "null"));
             if (resultCode == -1 || data == null) {
-                log("MediaProjection数据无效");
+                log("MediaProjection数据无效! resultCode=" + resultCode);
                 stopSelf();
                 return START_NOT_STICKY;
             }
@@ -176,14 +187,101 @@ public class ScreenCaptureService extends Service {
         fpsStartTime = System.currentTimeMillis();
         frameCount = 0;
 
-        if (!initSuShell()) {
-            log("无法创建su shell,停止");
-            stopSelf();
-            return;
+        // Try framebuffer first (fastest), fall back to screencap
+        boolean fbOk = testFramebuffer();
+        if (fbOk) {
+            log("Root截图: fb0 mmap模式 (最快)");
+            inferHandler.post(this::framebufferCaptureLoop);
+        } else {
+            log("fb0不可用, 使用screencap模式");
+            if (!initSuShell()) {
+                log("无法创建su shell,停止");
+                stopSelf();
+                return;
+            }
+            log("Root截图启动(持久shell)");
+            inferHandler.post(this::rootCaptureLoop);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Framebuffer capture: /dev/graphics/fb0 via JNI mmap (fastest root method)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private boolean testFramebuffer() {
+        try {
+            // Allocate a small test buffer
+            ByteBuffer testBuf = ByteBuffer.allocateDirect(1920 * 1080 * 4);
+            int[] info = YoloV8Ncnn.nativeCaptureFramebuffer(testBuf);
+            if (info != null && info[0] > 0 && info[1] > 0) {
+                log("fb0测试成功: " + info[0] + "x" + info[1] + " bpp=" + info[2]);
+                return true;
+            }
+        } catch (Exception e) {
+            log("fb0测试失败: " + e.getMessage());
+        }
+        return false;
+    }
+
+    private void framebufferCaptureLoop() {
+        if (!isRunning.get()) return;
+
+        try {
+            long t0 = System.currentTimeMillis();
+
+            // Allocate buffer if needed (max screen size)
+            int maxSize = screenWidth * screenHeight * 4;
+            if (rootDirectBuf == null || rootDirectBuf.capacity() < maxSize) {
+                rootDirectBuf = ByteBuffer.allocateDirect(maxSize);
+                log("fb0 buffer分配: " + (maxSize / 1024) + "KB");
+            }
+
+            int[] info = YoloV8Ncnn.nativeCaptureFramebuffer(rootDirectBuf);
+            long captureMs = System.currentTimeMillis() - t0;
+
+            if (info == null || info[0] <= 0 || info[1] <= 0) {
+                log("fb0截图失败, 切换到screencap");
+                // Fall back to screencap
+                if (initSuShell()) {
+                    inferHandler.post(this::rootCaptureLoop);
+                }
+                return;
+            }
+
+            int w = info[0], h = info[1], bpp = info[2];
+
+            if (YoloV8Ncnn.nativeIsLoaded()) {
+                rootDirectBuf.rewind();
+
+                // fb0 is now always converted to RGBA in JNI
+                float[] rawResult = YoloV8Ncnn.nativeDetectBuffer(
+                        rootDirectBuf, w, h, w * 4,
+                        settings.getConfThresh(), settings.getNmsThresh());
+
+                if (rawResult != null) {
+                    float inferMs = YoloV8Ncnn.getInferTime(rawResult);
+                    BoxInfo[] boxes = YoloV8Ncnn.parseResult(rawResult);
+                    updateFps();
+                    handleAutoClick(boxes);
+
+                    if (frameCount <= 5 || frameCount % 30 == 0) {
+                        log("fb0: cap=" + captureMs + "ms inf=" + String.format("%.0f", inferMs)
+                                + "ms det=" + boxes.length + " fps=" + String.format("%.1f", currentFps));
+                    }
+
+                    DetectionCallback cb = callback;
+                    if (cb != null) cb.onDetectionResult(boxes, inferMs, currentFps, w, h);
+                } else {
+                    log("fb0推理null cap:" + captureMs + "ms");
+                }
+            }
+        } catch (Exception e) {
+            log("fb0异常:" + e.getMessage());
         }
 
-        log("Root截图启动(持久shell)");
-        inferHandler.post(this::rootCaptureLoop);
+        if (isRunning.get()) {
+            inferHandler.post(this::framebufferCaptureLoop);
+        }
     }
 
     private void rootCaptureLoop() {
@@ -276,7 +374,7 @@ public class ScreenCaptureService extends Service {
 
     @SuppressLint("WrongConstant")
     private void startMediaProjectionCapture(int resultCode, Intent data) {
-        log("MediaProjection启动");
+        log("MP启动: resultCode=" + resultCode + " data=" + (data != null ? "OK" : "null"));
 
         MediaProjectionManager mpManager =
                 (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
@@ -287,15 +385,17 @@ public class ScreenCaptureService extends Service {
             stopSelf(); return;
         }
         if (mediaProjection == null) {
-            log("MediaProjection=null!");
+            log("MediaProjection=null! 授权可能失败");
             stopSelf(); return;
         }
+        log("MP对象创建成功");
 
         mediaProjection.registerCallback(new MediaProjection.Callback() {
-            @Override public void onStop() { log("MP停止"); stopCapture(); }
+            @Override public void onStop() { log("MP回调:停止"); stopCapture(); }
         }, inferHandler);
 
-        imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 3);
+        log("创建ImageReader: " + captureWidth + "x" + captureHeight);
+        imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2);
 
         imageReader.setOnImageAvailableListener(reader -> {
             Image image = reader.acquireLatestImage();
@@ -307,6 +407,7 @@ public class ScreenCaptureService extends Service {
 
             try {
                 if (!YoloV8Ncnn.nativeIsLoaded()) {
+                    log("MP帧: 模型未加载");
                     image.close(); inferBusy.set(false);
                     return;
                 }
@@ -314,9 +415,17 @@ public class ScreenCaptureService extends Service {
                 Image.Plane plane = image.getPlanes()[0];
                 ByteBuffer buffer = plane.getBuffer();
                 int rowStride = plane.getRowStride();
+                int w = image.getWidth();
+                int h = image.getHeight();
+
+                // Log first frame info
+                if (frameCount == 0) {
+                    log("MP首帧: " + w + "x" + h + " stride=" + rowStride
+                            + " bufSize=" + buffer.remaining());
+                }
 
                 float[] rawResult = YoloV8Ncnn.nativeDetectBuffer(
-                        buffer, captureWidth, captureHeight, rowStride,
+                        buffer, w, h, rowStride,
                         settings.getConfThresh(), settings.getNmsThresh());
 
                 image.close();
@@ -327,22 +436,36 @@ public class ScreenCaptureService extends Service {
                     updateFps();
                     handleAutoClick(boxes);
 
+                    if (frameCount <= 3) {
+                        log("MP推理: " + String.format("%.0f", inferMs) + "ms det:" + boxes.length
+                                + " fps:" + String.format("%.1f", currentFps));
+                    }
+
                     DetectionCallback cb = callback;
-                    if (cb != null) cb.onDetectionResult(boxes, inferMs, currentFps,
-                            captureWidth, captureHeight);
+                    if (cb != null) cb.onDetectionResult(boxes, inferMs, currentFps, w, h);
+                } else {
+                    if (frameCount <= 3) log("MP推理返回null");
                 }
             } catch (Exception e) {
-                log("MP异常:" + e.getMessage());
+                log("MP帧异常:" + e.getMessage());
                 try { image.close(); } catch (Exception ignored) {}
             } finally {
                 inferBusy.set(false);
             }
         }, inferHandler);
 
-        virtualDisplay = mediaProjection.createVirtualDisplay("YoloV8Capture",
-                captureWidth, captureHeight, screenDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.getSurface(), null, inferHandler);
+        log("创建VirtualDisplay: " + captureWidth + "x" + captureHeight + " dpi=" + screenDpi);
+        try {
+            virtualDisplay = mediaProjection.createVirtualDisplay("YoloV8Capture",
+                    captureWidth, captureHeight, screenDpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    imageReader.getSurface(), null, inferHandler);
+            log("VirtualDisplay创建成功");
+        } catch (Exception e) {
+            log("VirtualDisplay创建失败:" + e.getMessage());
+            stopSelf();
+            return;
+        }
 
         isRunning.set(true);
         fpsStartTime = System.currentTimeMillis();

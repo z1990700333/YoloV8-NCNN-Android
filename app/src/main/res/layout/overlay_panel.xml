@@ -5,17 +5,17 @@
     android:orientation="vertical"
     android:background="#DD000000"
     android:padding="10dp"
-    android:minWidth="220dp">
+    android:minWidth="200dp">
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="YOLOv8 NCNN"
         android:textColor="#FF00BCD4"
-        android:textSize="14sp"
+        android:textSize="13sp"
         android:textStyle="bold"
         android:gravity="center"
-        android:paddingBottom="6dp" />
+        android:paddingBottom="4dp" />
 
     <TextView
         android:id="@+id/tv_fps"
@@ -23,7 +23,7 @@
         android:layout_height="wrap_content"
         android:text="帧率: --"
         android:textColor="#FF4CAF50"
-        android:textSize="13sp" />
+        android:textSize="12sp" />
 
     <TextView
         android:id="@+id/tv_infer_time"
@@ -31,7 +31,7 @@
         android:layout_height="wrap_content"
         android:text="推理: --"
         android:textColor="#FFFFC107"
-        android:textSize="13sp" />
+        android:textSize="12sp" />
 
     <TextView
         android:id="@+id/tv_detections"
@@ -39,7 +39,7 @@
         android:layout_height="wrap_content"
         android:text="检测: --"
         android:textColor="#FFFFFFFF"
-        android:textSize="13sp" />
+        android:textSize="12sp" />
 
     <TextView
         android:id="@+id/tv_click_coord"
@@ -47,8 +47,8 @@
         android:layout_height="wrap_content"
         android:text="点击坐标: 未设置"
         android:textColor="#FFAAAAAA"
-        android:textSize="12sp"
-        android:paddingTop="4dp" />
+        android:textSize="11sp"
+        android:paddingTop="2dp" />
 
     <TextView
         android:id="@+id/tv_status"
@@ -56,55 +56,55 @@
         android:layout_height="wrap_content"
         android:text=""
         android:textColor="#FFFFFF00"
-        android:textSize="11sp"
+        android:textSize="10sp"
         android:visibility="gone"
-        android:paddingTop="4dp" />
+        android:paddingTop="2dp" />
 
     <TextView
         android:id="@+id/tv_log"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="日志: 等待启动..."
+        android:text=""
         android:textColor="#FFAAAAAA"
-        android:textSize="10sp"
-        android:maxLines="6"
-        android:paddingTop="4dp" />
+        android:textSize="9sp"
+        android:maxLines="2"
+        android:paddingTop="2dp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:paddingTop="6dp">
+        android:paddingTop="4dp">
 
         <Button
             android:id="@+id/btn_toggle"
             android:layout_width="0dp"
-            android:layout_height="36dp"
+            android:layout_height="32dp"
             android:layout_weight="1"
             android:text="开始"
-            android:textSize="11sp"
+            android:textSize="10sp"
             android:textAllCaps="false"
             android:backgroundTint="#FF4CAF50"
-            android:layout_marginEnd="4dp" />
+            android:layout_marginEnd="3dp" />
 
         <Button
             android:id="@+id/btn_set_click"
             android:layout_width="0dp"
-            android:layout_height="36dp"
+            android:layout_height="32dp"
             android:layout_weight="1"
             android:text="设置坐标"
-            android:textSize="10sp"
+            android:textSize="9sp"
             android:textAllCaps="false"
             android:backgroundTint="#FF2196F3"
-            android:layout_marginEnd="4dp" />
+            android:layout_marginEnd="3dp" />
 
         <Button
             android:id="@+id/btn_auto_click"
             android:layout_width="0dp"
-            android:layout_height="36dp"
+            android:layout_height="32dp"
             android:layout_weight="1"
             android:text="自动点击: 关"
-            android:textSize="10sp"
+            android:textSize="9sp"
             android:textAllCaps="false"
             android:backgroundTint="#FF757575" />
     </LinearLayout>
