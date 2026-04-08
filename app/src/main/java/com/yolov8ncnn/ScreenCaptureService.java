@@ -119,25 +119,31 @@ public class ScreenCaptureService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) { log("onStartCommand: intent=null"); stopSelf(); return START_NOT_STICKY; }
 
-        // Android 14+ 必须指定 foregroundServiceType，否则 SecurityException
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, buildNotification(),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        } else {
-            startForeground(NOTIFICATION_ID, buildNotification());
-        }
-
         useRootCapture = intent.getBooleanExtra(EXTRA_USE_ROOT, false);
         log("onStartCommand: useRoot=" + useRootCapture);
+
+        // Root 模式不需要 MEDIA_PROJECTION 类型，否则 Android 14+ 会 SecurityException 闪退
+        if (useRootCapture) {
+            startForeground(NOTIFICATION_ID, buildNotification());
+        } else {
+            // MediaProjection 模式: Android 10+ 必须指定 foregroundServiceType
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, buildNotification(),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+            } else {
+                startForeground(NOTIFICATION_ID, buildNotification());
+            }
+        }
 
         if (useRootCapture) {
             startRootCapture();
         } else {
-            int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1);
+            // Activity.RESULT_OK == -1, 所以不能用 resultCode == -1 判断无效
+            int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
             Intent data = intent.getParcelableExtra(EXTRA_DATA);
             log("MP数据: resultCode=" + resultCode + " data=" + (data != null ? "OK" : "null"));
-            if (resultCode == -1 || data == null) {
-                log("MediaProjection数据无效! resultCode=" + resultCode);
+            if (data == null) {
+                log("MediaProjection数据无效! data=null");
                 stopSelf();
                 return START_NOT_STICKY;
             }
