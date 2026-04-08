@@ -7,7 +7,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
@@ -45,11 +44,11 @@
             android:excludeFromRecents="true"
             android:taskAffinity="" />
 
-        <!-- Screen Capture Service (Root模式用dataSync类型, MP模式用mediaProjection类型) -->
+        <!-- Screen Capture Service (MediaProjection only) -->
         <service
             android:name=".ScreenCaptureService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|dataSync" />
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- Overlay Service -->
         <service

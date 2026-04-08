@@ -13,12 +13,6 @@
 #include <mutex>
 #include <fstream>
 #include <sstream>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/ioctl.h>
-#include <linux/fb.h>
-#include <cerrno>
 #include "net.h"
 #include "cpu.h"
 #include "layer.h"
@@ -423,94 +417,6 @@ Java_com_yolov8ncnn_YoloV8Ncnn_nativeIsLoaded(JNIEnv*, jclass) {
 JNIEXPORT jboolean JNICALL
 Java_com_yolov8ncnn_YoloV8Ncnn_nativeHasGpu(JNIEnv*, jclass) {
     return (jboolean)g_det.hasGpu();
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Native framebuffer capture via /dev/graphics/fb0 (root required)
-// ═══════════════════════════════════════════════════════════════════════
-
-JNIEXPORT jintArray JNICALL
-Java_com_yolov8ncnn_YoloV8Ncnn_nativeCaptureFramebuffer(
-    JNIEnv* env, jclass, jobject outBuf) {
-    int fd = open("/dev/graphics/fb0", O_RDONLY);
-    if (fd < 0) {
-        LOGE("fb0 open failed: %s", strerror(errno));
-        return nullptr;
-    }
-
-    struct fb_var_screeninfo vinfo;
-    struct fb_fix_screeninfo finfo;
-    if (ioctl(fd, FBIOGET_VSCREENINFO, &vinfo) < 0 ||
-        ioctl(fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
-        LOGE("fb0 ioctl failed: %s", strerror(errno));
-        close(fd);
-        return nullptr;
-    }
-
-    int w = vinfo.xres;
-    int h = vinfo.yres;
-    int bpp = vinfo.bits_per_pixel / 8;
-    int lineLen = finfo.line_length;
-    size_t mapSize = (size_t)lineLen * h;
-
-    void* mapped = mmap(nullptr, mapSize, PROT_READ, MAP_SHARED, fd, 0);
-    if (mapped == MAP_FAILED) {
-        LOGE("fb0 mmap failed: %s", strerror(errno));
-        close(fd);
-        return nullptr;
-    }
-
-    uint8_t* dst = (uint8_t*)env->GetDirectBufferAddress(outBuf);
-    jlong bufCap = env->GetDirectBufferCapacity(outBuf);
-    if (!dst || bufCap < (jlong)(w * h * 4)) {
-        LOGE("fb0: buffer too small (need %d, have %lld)", w*h*4, (long long)bufCap);
-        munmap(mapped, mapSize);
-        close(fd);
-        return nullptr;
-    }
-
-    uint8_t* src = (uint8_t*)mapped;
-
-    if (bpp == 4) {
-        bool isBGR = (vinfo.blue.offset == 0 && vinfo.red.offset == 16);
-        if (isBGR) {
-            for (int y = 0; y < h; y++) {
-                uint8_t* s = src + y * lineLen;
-                uint8_t* d = dst + y * w * 4;
-                for (int x = 0; x < w; x++) {
-                    d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; d[3] = 255;
-                    s += 4; d += 4;
-                }
-            }
-        } else {
-            for (int y = 0; y < h; y++)
-                memcpy(dst + y * w * 4, src + y * lineLen, w * 4);
-        }
-    } else if (bpp == 2) {
-        for (int y = 0; y < h; y++) {
-            uint16_t* s = (uint16_t*)(src + y * lineLen);
-            uint8_t* d = dst + y * w * 4;
-            for (int x = 0; x < w; x++) {
-                uint16_t px = s[x];
-                d[0] = ((px >> 11) & 0x1F) * 255 / 31;
-                d[1] = ((px >> 5) & 0x3F) * 255 / 63;
-                d[2] = (px & 0x1F) * 255 / 31;
-                d[3] = 255;
-                d += 4;
-            }
-        }
-    } else {
-        for (int y = 0; y < h; y++)
-            memcpy(dst + y * w * bpp, src + y * lineLen, w * bpp);
-    }
-
-    munmap(mapped, mapSize);
-    close(fd);
-
-    jintArray result = env->NewIntArray(3);
-    int info[3] = {w, h, 4};
-    env->SetIntArrayRegion(result, 0, 3, info);
-    return result;
 }
 
 } // extern "C"

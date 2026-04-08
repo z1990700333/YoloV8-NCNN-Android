@@ -1,9 +1,7 @@
 package com.yolov8ncnn;
 
 import android.accessibilityservice.AccessibilityService;
-import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.GestureDescription;
-import android.content.Intent;
 import android.graphics.Path;
 import android.os.Build;
 import android.util.Log;
@@ -19,27 +17,15 @@ public class AutoClickService extends AccessibilityService {
     private static AutoClickService sInstance = null;
     private long lastClickTime = 0;
 
-    public static AutoClickService getInstance() {
-        return sInstance;
-    }
-
-    public static boolean isRunning() {
-        return sInstance != null;
-    }
+    public static AutoClickService getInstance() { return sInstance; }
+    public static boolean isRunning() { return sInstance != null; }
 
     @Override
     public void onServiceConnected() {
         super.onServiceConnected();
         sInstance = this;
-
-        AccessibilityServiceInfo info = new AccessibilityServiceInfo();
-        info.eventTypes = AccessibilityEvent.TYPES_ALL_MASK;
-        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC;
-        info.notificationTimeout = 100;
-        info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS;
-        setServiceInfo(info);
-
         Log.i(TAG, "AutoClickService connected");
+        MainActivity.appendLog("无障碍服务已连接");
     }
 
     @Override
@@ -61,18 +47,12 @@ public class AutoClickService extends AccessibilityService {
 
     /**
      * Perform a tap at the given screen coordinates.
-     * Returns true if the gesture was dispatched successfully.
      */
     public boolean tap(float x, float y, int minIntervalMs) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
-            Log.e(TAG, "dispatchGesture requires API 24+");
-            return false;
-        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false;
 
         long now = System.currentTimeMillis();
-        if (now - lastClickTime < minIntervalMs) {
-            return false; // Rate limit
-        }
+        if (now - lastClickTime < minIntervalMs) return false;
         lastClickTime = now;
 
         Path clickPath = new Path();
@@ -80,42 +60,8 @@ public class AutoClickService extends AccessibilityService {
 
         GestureDescription.StrokeDescription stroke =
                 new GestureDescription.StrokeDescription(clickPath, 0, 50);
-
         GestureDescription gesture = new GestureDescription.Builder()
-                .addStroke(stroke)
-                .build();
-
-        boolean dispatched = dispatchGesture(gesture, new GestureResultCallback() {
-            @Override
-            public void onCompleted(GestureDescription gestureDescription) {
-                Log.d(TAG, String.format("Tap completed at (%.0f, %.0f)", x, y));
-            }
-
-            @Override
-            public void onCancelled(GestureDescription gestureDescription) {
-                Log.w(TAG, String.format("Tap cancelled at (%.0f, %.0f)", x, y));
-            }
-        }, null);
-
-        return dispatched;
-    }
-
-    /**
-     * Perform a swipe gesture.
-     */
-    public boolean swipe(float x1, float y1, float x2, float y2, long durationMs) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false;
-
-        Path swipePath = new Path();
-        swipePath.moveTo(x1, y1);
-        swipePath.lineTo(x2, y2);
-
-        GestureDescription.StrokeDescription stroke =
-                new GestureDescription.StrokeDescription(swipePath, 0, durationMs);
-
-        GestureDescription gesture = new GestureDescription.Builder()
-                .addStroke(stroke)
-                .build();
+                .addStroke(stroke).build();
 
         return dispatchGesture(gesture, null, null);
     }

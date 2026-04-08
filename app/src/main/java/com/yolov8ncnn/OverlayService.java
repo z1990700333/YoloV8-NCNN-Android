@@ -105,12 +105,7 @@ public class OverlayService extends Service {
             if (isCapturing) {
                 stopScreenCapture();
             } else {
-                int mode = settings.getCaptureMode();
-                if (mode == 1) {
-                    startScreenCaptureRoot();
-                } else {
-                    startScreenCaptureMediaProjection();
-                }
+                startScreenCaptureMediaProjection();
             }
         });
 
@@ -254,42 +249,6 @@ public class OverlayService extends Service {
         Intent intent = new Intent(this, MediaProjectionRequestActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);
-    }
-
-    /**
-     * Root 模式：直接启动 Root 截图
-     */
-    private void startScreenCaptureRoot() {
-        if (!YoloV8Ncnn.nativeIsLoaded()) {
-            appendLog("请先加载模型!");
-            MainActivity.appendLog("请先加载模型!");
-            return;
-        }
-
-        appendLog("启动Root...");
-        MainActivity.appendLog("悬浮窗启动 Root 截图模式");
-        Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
-        serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
-        }
-
-        new Thread(() -> {
-            for (int i = 0; i < 50; i++) {
-                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-                ScreenCaptureService svc = ScreenCaptureService.getInstance();
-                if (svc != null && ScreenCaptureService.isServiceRunning()) {
-                    svc.setCallback((boxes, inferTimeMs, fps, captureW, captureH) ->
-                            updateDetections(boxes, inferTimeMs, fps, captureW, captureH));
-                    setCapturing(true);
-                    return;
-                }
-            }
-            appendLog("超时");
-            MainActivity.appendLog("截图服务启动超时!");
-        }).start();
     }
 
     public void updateDetections(BoxInfo[] boxes, float inferTimeMs, float fps,

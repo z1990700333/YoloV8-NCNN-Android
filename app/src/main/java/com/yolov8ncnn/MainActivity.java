@@ -22,8 +22,6 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Spinner;
@@ -73,12 +71,9 @@ public class MainActivity extends AppCompatActivity {
     private Button btnClearLog;
     private TextView tvParamPath, tvBinPath, tvModelStatus;
     private TextView tvOverlayStatus, tvAccessibilityStatus, tvStorageStatus, tvNotificationStatus;
-    private TextView tvRootStatus;
     private TextView tvMainLog;
     private ScrollView svLog;
     private EditText etTargetLabel, etClickDelay;
-    private RadioGroup rgCaptureMode;
-    private RadioButton rbMediaProjection, rbRoot;
 
     private BroadcastReceiver startCaptureReceiver;
 
@@ -91,7 +86,6 @@ public class MainActivity extends AppCompatActivity {
             if (act != null && act.tvMainLog != null) {
                 String time = sTimeFmt.format(new Date());
                 act.tvMainLog.append("[" + time + "] " + msg + "\n");
-                // 自动滚动到底部
                 if (act.svLog != null) {
                     act.svLog.post(() -> act.svLog.fullScroll(View.FOCUS_DOWN));
                 }
@@ -112,6 +106,9 @@ public class MainActivity extends AppCompatActivity {
         loadSettings();
         updatePermissionStatus();
         registerReceivers();
+
+        // 尝试 Root 自动授权无障碍
+        tryAutoGrantAccessibility();
 
         appendLog("应用启动");
     }
@@ -203,41 +200,6 @@ public class MainActivity extends AppCompatActivity {
         // 目标标签 & 点击延迟
         etTargetLabel = findViewById(R.id.et_target_label);
         etClickDelay = findViewById(R.id.et_click_delay);
-
-        // 截图模式
-        rgCaptureMode = findViewById(R.id.rg_capture_mode);
-        rbMediaProjection = findViewById(R.id.rb_media_projection);
-        rbRoot = findViewById(R.id.rb_root);
-        tvRootStatus = findViewById(R.id.tv_root_status);
-
-        // 异步检测 Root
-        new Thread(() -> {
-            boolean hasRoot = ScreenCaptureService.checkRootAccess();
-            runOnUiThread(() -> {
-                if (hasRoot) {
-                    tvRootStatus.setText("Root: 可用");
-                    tvRootStatus.setTextColor(0xFF4CAF50);
-                    // Root 自动授权无障碍服务
-                    if (!AutoClickService.isRunning()) {
-                        autoGrantAccessibilityViaRoot();
-                    }
-                } else {
-                    tvRootStatus.setText("Root: 不可用");
-                    tvRootStatus.setTextColor(0xFFF44336);
-                    rbRoot.setEnabled(false);
-                }
-            });
-        }).start();
-
-        // Sync radio buttons with saved capture mode
-        int savedMode = settings.getCaptureMode();
-        if (savedMode == 1) rbRoot.setChecked(true);
-        else rbMediaProjection.setChecked(true);
-
-        rgCaptureMode.setOnCheckedChangeListener((group, checkedId) -> {
-            if (checkedId == R.id.rb_root) settings.setCaptureMode(1);
-            else settings.setCaptureMode(0);
-        });
 
         // 权限按钮
         btnGrantOverlay = findViewById(R.id.btn_grant_overlay);
@@ -331,8 +293,7 @@ public class MainActivity extends AppCompatActivity {
         int numThreads = settings.getNumThreads();
 
         tvModelStatus.setText("模型: 加载中...");
-        Log.i(TAG, String.format("加载模型: size=%d gpu=%b threads=%d param=%s",
-                targetSize, useGpu, numThreads, paramPath));
+        appendLog("加载模型: size=" + targetSize + " gpu=" + useGpu + " threads=" + numThreads);
 
         new Thread(() -> {
             boolean ok = YoloV8Ncnn.nativeLoadModelPath(paramPath, binPath,
@@ -341,9 +302,11 @@ public class MainActivity extends AppCompatActivity {
                 if (ok) {
                     tvModelStatus.setText(String.format("模型: 已加载 (size=%d, thr=%d)", targetSize, numThreads));
                     Toast.makeText(this, "模型加载成功!", Toast.LENGTH_SHORT).show();
+                    appendLog("模型加载成功");
                 } else {
                     tvModelStatus.setText("模型: 加载失败");
                     Toast.makeText(this, "模型加载失败，请检查文件", Toast.LENGTH_LONG).show();
+                    appendLog("模型加载失败");
                 }
             });
         }).start();
@@ -441,39 +404,19 @@ public class MainActivity extends AppCompatActivity {
             try { Thread.sleep(300); } catch (InterruptedException ignored) {}
         }
 
-        boolean useRoot = rbRoot.isChecked();
-        settings.setCaptureMode(useRoot ? 1 : 0);
-        Log.i(TAG, "开始截图 useRoot=" + useRoot + " modelLoaded=" + YoloV8Ncnn.nativeIsLoaded());
-
-        OverlayService ov = OverlayService.getInstance();
-        if (ov != null) ov.appendLog("从主界面启动: " + (useRoot ? "Root" : "MediaProjection"));
-
-        if (useRoot) {
-            Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
-            serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, true);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
-            else startService(serviceIntent);
-            setupCallback();
-            Toast.makeText(this, "Root 截图模式已启动!", Toast.LENGTH_SHORT).show();
-        } else {
-            Log.i(TAG, "请求 MediaProjection 授权...");
-            if (ov != null) ov.appendLog("请求屏幕录制授权...");
-            MediaProjectionManager mpManager =
-                    (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-            startActivityForResult(mpManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
-        }
+        appendLog("请求 MediaProjection 授权...");
+        MediaProjectionManager mpManager =
+                (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+        startActivityForResult(mpManager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION);
     }
 
     private void setupCallback() {
         new Thread(() -> {
-            // 等待服务启动，最多等5秒
             for (int i = 0; i < 50; i++) {
                 try { Thread.sleep(100); } catch (InterruptedException ignored) {}
                 ScreenCaptureService service = ScreenCaptureService.getInstance();
                 if (service != null && ScreenCaptureService.isServiceRunning()) {
-                    Log.i(TAG, "ScreenCaptureService ready after " + (i*100) + "ms");
-                    OverlayService ov = OverlayService.getInstance();
-                    if (ov != null) ov.appendLog("截图服务已就绪 (" + (i*100) + "ms)");
+                    appendLog("截图服务已就绪");
                     service.setCallback((boxes, inferTimeMs, fps, captureW, captureH) -> {
                         OverlayService overlay = OverlayService.getInstance();
                         if (overlay != null) {
@@ -485,9 +428,7 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
             }
-            Log.e(TAG, "ScreenCaptureService did not start in time");
-            OverlayService ov = OverlayService.getInstance();
-            if (ov != null) ov.appendLog("截图服务启动超时!");
+            appendLog("截图服务启动超时!");
         }).start();
     }
 
@@ -499,20 +440,19 @@ public class MainActivity extends AppCompatActivity {
         switch (requestCode) {
             case REQUEST_MEDIA_PROJECTION:
                 Log.i(TAG, "MP onActivityResult: resultCode=" + resultCode + " data=" + data);
-                OverlayService ovMP = OverlayService.getInstance();
                 if (resultCode == RESULT_OK && data != null) {
-                    if (ovMP != null) ovMP.appendLog("MP授权成功, 启动服务...");
+                    appendLog("MP授权成功, 启动服务...");
                     Intent serviceIntent = new Intent(this, ScreenCaptureService.class);
                     serviceIntent.putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode);
                     serviceIntent.putExtra(ScreenCaptureService.EXTRA_DATA, data);
-                    serviceIntent.putExtra(ScreenCaptureService.EXTRA_USE_ROOT, false);
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
-                    else startService(serviceIntent);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(serviceIntent);
+                    } else {
+                        startService(serviceIntent);
+                    }
                     setupCallback();
-                    Toast.makeText(this, "屏幕捕获已启动!", Toast.LENGTH_SHORT).show();
                 } else {
-                    Log.w(TAG, "MP授权被拒绝: resultCode=" + resultCode);
-                    if (ovMP != null) ovMP.appendLog("MP授权被拒绝: code=" + resultCode);
+                    appendLog("MP授权被拒绝: code=" + resultCode);
                     Toast.makeText(this, "屏幕录制授权被拒绝", Toast.LENGTH_SHORT).show();
                 }
                 break;
@@ -558,35 +498,40 @@ public class MainActivity extends AppCompatActivity {
         updatePermissionStatus();
     }
 
-    @Override protected void onResume() {
+    @Override
+    protected void onResume() {
         super.onResume();
         sInstance = new WeakReference<>(this);
         updatePermissionStatus();
     }
 
     /**
-     * 通过 Root 自动启用无障碍服务
+     * 尝试通过 Root 自动启用无障碍服务（静默，不影响启动）
      */
-    private void autoGrantAccessibilityViaRoot() {
+    private void tryAutoGrantAccessibility() {
+        if (AutoClickService.isRunning()) return;
         new Thread(() -> {
             try {
+                // 先检测 root
+                Process check = Runtime.getRuntime().exec(new String[]{"su", "-c", "id"});
+                java.io.BufferedReader br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(check.getInputStream()));
+                String line = br.readLine();
+                check.waitFor();
+                if (line == null || !line.contains("uid=0")) return; // 无 root，静默退出
+
                 String pkg = getPackageName();
                 String svc = pkg + "/" + pkg + ".AutoClickService";
 
-                // 1. 读取当前已启用的无障碍服务
+                // 读取当前已启用的无障碍服务
                 Process getCur = Runtime.getRuntime().exec(new String[]{"su", "-c",
                         "settings get secure enabled_accessibility_services"});
-                java.io.BufferedReader br = new java.io.BufferedReader(
-                        new java.io.InputStreamReader(getCur.getInputStream()));
+                br = new java.io.BufferedReader(new java.io.InputStreamReader(getCur.getInputStream()));
                 String current = br.readLine();
                 getCur.waitFor();
                 if (current == null || "null".equals(current)) current = "";
 
-                // 2. 如果已包含则跳过
-                if (current.contains(svc)) {
-                    appendLog("无障碍服务已在列表中");
-                } else {
-                    // 追加到现有列表（用:分隔）
+                if (!current.contains(svc)) {
                     String newVal = current.isEmpty() ? svc : current + ":" + svc;
                     Process su = Runtime.getRuntime().exec("su");
                     java.io.OutputStream os = su.getOutputStream();
@@ -595,10 +540,10 @@ public class MainActivity extends AppCompatActivity {
                     os.write("exit\n".getBytes());
                     os.flush();
                     int ret = su.waitFor();
-                    appendLog(ret == 0 ? "Root自动授权无障碍成功" : "Root自动授权无障碍失败(code=" + ret + ")");
+                    appendLog(ret == 0 ? "Root自动授权无障碍成功" : "Root自动授权无障碍失败");
                 }
 
-                // 3. 等待服务真正连接（最多3秒）
+                // 等待服务连接
                 for (int i = 0; i < 30; i++) {
                     Thread.sleep(100);
                     if (AutoClickService.isRunning()) {
@@ -606,15 +551,12 @@ public class MainActivity extends AppCompatActivity {
                         break;
                     }
                 }
-                if (!AutoClickService.isRunning()) {
-                    appendLog("无障碍服务未能启动，请手动开启");
-                }
 
-                runOnUiThread(() -> {
-                    new Handler(Looper.getMainLooper()).postDelayed(this::updatePermissionStatus, 500);
-                });
+                runOnUiThread(() -> new Handler(Looper.getMainLooper())
+                        .postDelayed(this::updatePermissionStatus, 500));
             } catch (Exception e) {
-                appendLog("Root授权无障碍异常: " + e.getMessage());
+                // 静默失败，不影响正常使用
+                Log.w(TAG, "Auto grant accessibility failed: " + e.getMessage());
             }
         }).start();
     }

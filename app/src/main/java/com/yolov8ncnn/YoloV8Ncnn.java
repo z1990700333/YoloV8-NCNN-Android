@@ -55,13 +55,6 @@ public class YoloV8Ncnn {
     /** Check if GPU is available */
     public static native boolean nativeHasGpu();
 
-    /**
-     * Capture screen via /dev/graphics/fb0 (root required, mmap, very fast).
-     * outBuffer: pre-allocated DirectByteBuffer for pixel data.
-     * Returns int[3] = {width, height, bytesPerPixel} or null on failure.
-     */
-    public static native int[] nativeCaptureFramebuffer(ByteBuffer outBuffer);
-
     // ── Java helper methods ─────────────────────────────────────────────
 
     /**

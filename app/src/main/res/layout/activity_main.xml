@@ -165,52 +165,6 @@
         <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#33FFFFFF"
             android:layout_marginTop="12dp" />
 
-        <!-- ═══ 截图模式 ═══ -->
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="截图模式"
-            android:textColor="#FF00BCD4"
-            android:textSize="16sp"
-            android:textStyle="bold"
-            android:paddingTop="12dp"
-            android:paddingBottom="8dp" />
-
-        <RadioGroup
-            android:id="@+id/rg_capture_mode"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-            <RadioButton
-                android:id="@+id/rb_media_projection"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="MediaProjection"
-                android:textColor="#DDFFFFFF"
-                android:textSize="12sp"
-                android:checked="true" />
-            <RadioButton
-                android:id="@+id/rb_root"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Root 截图"
-                android:textColor="#DDFFFFFF"
-                android:textSize="12sp" />
-        </RadioGroup>
-
-        <TextView
-            android:id="@+id/tv_root_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Root: 检测中..."
-            android:textColor="#88FFFFFF"
-            android:textSize="12sp"
-            android:paddingBottom="12dp" />
-
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#33FFFFFF" />
-
         <!-- ═══ 自动点击 ═══ -->
         <TextView
             android:layout_width="match_parent"
